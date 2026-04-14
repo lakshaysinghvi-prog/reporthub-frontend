@@ -1,5 +1,9 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import _ from "lodash";
+// API module — calls Railway backend. Stripped in standalone HTML (functions are global there).
+import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePassword,
+         deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
+         publishReport as apiPublishReport, getReportData } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -1412,7 +1416,7 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
 }
 
 // ── Admin View ─────────────────────────────────────────────────────────────────
-function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onDeleteReport,users,onUpdateUsers,currentUser}) {
+function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onDeleteReport,onLoadReportData,onReloadReports,currentUser}) {
   const libs=useLibs();
   const [dataset,setDataset]=useState(null);
   const [config,setConfig]=useState(null);
@@ -1421,6 +1425,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [tab,setTab]=useState("upload");
   const [toast,setToast]=useState("");
   const [showSettings,setShowSettings]=useState(false);
+  const [apiLoading,setApiLoading]=useState(false);
 
   const effectiveNumFields=useMemo(()=>{
     if (!dataset) return new Set();
@@ -1430,20 +1435,36 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   },[dataset,typeOverrides]);
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setTab("builder");}
-  function openSavedReport(id) {
+  async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
     if (!r) return;
-    setDataset(r.dataset);setConfig(r.config);setCardFields(r.cardFields||[]);setTypeOverrides({});setTab("builder");
+    setApiLoading(true);
+    try {
+      // Load rows from API (cached after first load)
+      const data=await onLoadReportData(id);
+      const ds={rows:data.rows,fields:data.fields,numFields:data.numFields};
+      setDataset(ds);setConfig(r.config);setCardFields(r.cardFields||[]);setTypeOverrides({});
+      setTab("builder");
+    } catch(e){showToast("Load error: "+e.message);}
+    finally{setApiLoading(false);}
   }
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
-  function doSave() {
+  async function doSave() {
     if (!dataset||!config){showToast("Nothing to save yet.");return;}
-    const id=onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
-    showToast("Saved as new report!");
+    setApiLoading(true);
+    try{
+      await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
+      showToast("Report saved!");
+    }catch(e){showToast("Save failed: "+e.message);}
+    finally{setApiLoading(false);}
   }
-  function doPublish(id) {
-    onPublishReport(id);
-    showToast("Report published to users!");
+  async function doPublish(id) {
+    setApiLoading(true);
+    try{
+      await onPublishReport(id);
+      showToast("Report published to users!");
+    }catch(e){showToast("Publish failed: "+e.message);}
+    finally{setApiLoading(false);}
   }
 
   function toggleFieldType(field) {
@@ -1509,7 +1530,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="Admin" onLogout={onLogout}>
         {toast&&<span style={{fontSize:12,color:T.textLt,background:"rgba(45,106,79,0.5)",padding:"4px 12px",borderRadius:6,fontWeight:500,border:"1px solid rgba(45,106,79,0.6)"}}>{toast}</span>}
-        {dataset&&config&&<button onClick={doSave} style={{padding:"6px 14px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>Save Report</button>}
+        {dataset&&config&&<button onClick={doSave} disabled={apiLoading} style={{padding:"6px 14px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,cursor:apiLoading?"wait":"pointer",fontSize:12,fontWeight:600,opacity:apiLoading?0.6:1}}>
+          {apiLoading?"Saving…":"Save Report"}
+        </button>}
         <button onClick={()=>setShowSettings(true)} title="User management & settings"
           style={{padding:"6px 12px",background:"rgba(255,255,255,0.12)",color:T.textLt,border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12}}>
           ⚙ Settings
@@ -1621,19 +1644,35 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           onDelete={onDeleteReport}
           onPublish={doPublish}/>
       )}
-      {showSettings&&<SettingsPanel users={users} onSave={onUpdateUsers} currentUser={currentUser} onClose={()=>setShowSettings(false)}/>}
+      {showSettings&&<SettingsPanel currentUser={currentUser} onClose={()=>setShowSettings(false)}/>}
     </div>
   );
 }
 
 // ── User view ──────────────────────────────────────────────────────────────────
-function UserView({onLogout,savedReports,publishedReport}) {
+function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
   const [activeId,setActiveId]=useState(null);
-  // Default to published report; user can switch to any saved report
-  const current=useMemo(()=>{
+  const [loadedData,setLoadedData]=useState({}); // {reportId -> {rows,fields,numFields}}
+  const [dataLoading,setDataLoading]=useState(false);
+
+  const currentMeta=useMemo(()=>{
     if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReport;
     return publishedReport;
   },[activeId,savedReports,publishedReport]);
+
+  // Load data whenever the selected report changes
+  useEffect(()=>{
+    if (!currentMeta) return;
+    const id=currentMeta.id;
+    if (loadedData[id]) return; // already loaded
+    setDataLoading(true);
+    onLoadReportData(id)
+      .then(data=>setLoadedData(p=>({...p,[id]:data})))
+      .catch(e=>console.error("Load error",e))
+      .finally(()=>setDataLoading(false));
+  },[currentMeta]);
+
+  const currentData=currentMeta?loadedData[currentMeta.id]:null;
 
   if (!publishedReport&&!savedReports.length) return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage}}>
@@ -1648,69 +1687,100 @@ function UserView({onLogout,savedReports,publishedReport}) {
   return(
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="User" onLogout={onLogout}>
-        {/* Report selector */}
         {savedReports.length>0&&(
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:11,color:"rgba(245,239,230,0.6)"}}>Report:</span>
-            <select value={activeId||"published"} onChange={e=>setActiveId(e.target.value==="published"?null:e.target.value)}
+            <select value={activeId||(publishedReport?"published":"")}
+              onChange={e=>setActiveId(e.target.value==="published"?null:e.target.value)}
               style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,background:"rgba(255,255,255,0.1)",
                 color:T.textLt,fontSize:12,cursor:"pointer",outline:"none",maxWidth:200}}>
               {publishedReport&&<option value="published">{publishedReport.name} (published)</option>}
-              {savedReports.filter(r=>r.id!==publishedReport?.id).map(r=>(
+              {savedReports.filter(r=>!r.isPublished).map(r=>(
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
           </div>
         )}
       </AppHeader>
-      {current?(
-        <div style={{padding:20}}>
-          <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:4}}>
-            <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{current.config.name}</div>
-            {current.id===publishedReport?.id&&<span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>}
-          </div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>
-            {current.dataset.rows.length.toLocaleString()} records · {current.dataset.fields.length} fields · Drag column headers to reorder · Click cells to drill down
-          </div>
-          <Report
-            config={current.config}
-            data={current.dataset.rows}
-            fields={current.dataset.fields}
-            numFields={current.dataset.numFields}
-            showExport
-            cardFields={current.cardFields||[]}/>
-        </div>
-      ):(
-        <div style={{padding:40,textAlign:"center"}}>
-          <div style={{fontSize:13,color:T.textMd}}>Select a report from the dropdown above.</div>
+      {dataLoading&&(
+        <div style={{padding:"40px",textAlign:"center"}}>
+          <div style={{fontSize:30,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+          <div style={{color:T.textMd,marginTop:10,fontSize:13}}>Loading report data…</div>
+          <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
         </div>
       )}
+      {!dataLoading&&currentMeta&&currentData?(
+        <div style={{padding:20}}>
+          <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:4}}>
+            <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
+            {currentMeta.isPublished&&<span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>}
+          </div>
+          <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>
+            {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields · Click cells to drill down
+          </div>
+          <Report
+            config={currentMeta.config}
+            data={currentData.rows}
+            fields={currentData.fields}
+            numFields={currentData.numFields}
+            showExport
+            cardFields={currentMeta.cardFields||[]}/>
+        </div>
+      ):(!dataLoading&&<div style={{padding:40,textAlign:"center",fontSize:13,color:T.textMd}}>Select a report above.</div>)}
     </div>
   );
 }
 
 
 // ── Settings / User Management ────────────────────────────────────────────────
-function SettingsPanel({users,onSave,currentUser,onClose}) {
-  const [localUsers,setLocalUsers]=useState(users.map(u=>({...u})));
+function SettingsPanel({currentUser,onClose}) {
+  const [users,setUsers]=useState([]);
+  const [pwdEdits,setPwdEdits]=useState({}); // {id: newPassword}
   const [newUser,setNewUser]=useState({username:"",password:"",role:"user"});
   const [toast,setToast]=useState("");
-  const [showPwd,setShowPwd]=useState({});
+  const [loading,setLoading]=useState(false);
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
-  function addUser(){
+
+  // Load users from API on mount
+  useEffect(()=>{
+    getUsers().then(setUsers).catch(e=>showToast("Load failed: "+e.message));
+  },[]);
+
+  async function addUser(){
     if (!newUser.username.trim()||!newUser.password.trim()){showToast("Username and password required.");return;}
-    if (localUsers.find(u=>u.username===newUser.username)){showToast("Username already exists.");return;}
-    setLocalUsers(p=>[...p,{id:"u_"+Date.now(),...newUser}]);
-    setNewUser({username:"",password:"",role:"user"});
-    showToast("User added.");
+    setLoading(true);
+    try{
+      const u=await createUser(newUser.username.trim(),newUser.password,newUser.role);
+      setUsers(p=>[...p,u]);
+      setNewUser({username:"",password:"",role:"user"});
+      showToast("User created!");
+    }catch(e){showToast(e.message||"Create failed.");}
+    finally{setLoading(false);}
   }
-  function updatePwd(id,pwd){setLocalUsers(p=>p.map(u=>u.id===id?{...u,password:pwd}:u));}
-  function delUser(id){
-    if (localUsers.find(u=>u.id===id)?.username===currentUser){showToast("Cannot delete your own account.");return;}
-    setLocalUsers(p=>p.filter(u=>u.id!==id));
-    showToast("User deleted.");
+
+  async function savePwd(id){
+    const pwd=pwdEdits[id]||"";
+    if (!pwd){showToast("Enter a new password first.");return;}
+    setLoading(true);
+    try{
+      await updatePassword(id,pwd);
+      setPwdEdits(p=>{const n={...p};delete n[id];return n;});
+      showToast("Password updated!");
+    }catch(e){showToast(e.message||"Update failed.");}
+    finally{setLoading(false);}
   }
-  function save(){onSave(localUsers);showToast("Saved!");setTimeout(onClose,800);}
+
+  async function delUser(id){
+    if (users.find(u=>u.id===id)?.username===currentUser){showToast("Cannot delete your own account.");return;}
+    if (!confirm("Delete this user?")) return;
+    setLoading(true);
+    try{
+      await deleteUser(id);
+      setUsers(p=>p.filter(u=>u.id!==id));
+      showToast("User deleted.");
+    }catch(e){showToast(e.message||"Delete failed.");}
+    finally{setLoading(false);}
+  }
 
   const inp={padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box"};
   return(
@@ -1734,11 +1804,15 @@ function SettingsPanel({users,onSave,currentUser,onClose}) {
                   <div style={{fontWeight:600,fontSize:13,color:T.text}}>{u.username} {u.username===currentUser&&<span style={{fontSize:10,color:T.textMd}}>(you)</span>}</div>
                   <div style={{fontSize:11,color:T.textMd}}>{u.role}</div>
                 </div>
-                <input type="password" value={u.password} onChange={e=>updatePwd(u.id,e.target.value)}
+                <input type="password" value={pwdEdits[u.id]||""} onChange={e=>setPwdEdits(p=>({...p,[u.id]:e.target.value}))}
                   placeholder="New password" title="Change password"
-                  style={{...inp,width:140,flexShrink:0}}/>
+                  style={{...inp,width:130,flexShrink:0}}/>
+                {pwdEdits[u.id]&&<button onClick={()=>savePwd(u.id)} disabled={loading}
+                  style={{padding:"5px 8px",border:"1px solid "+T.primary,borderRadius:6,background:T.primary,cursor:"pointer",fontSize:11,color:T.textLt,flexShrink:0,fontWeight:600}}>
+                  Save
+                </button>}
                 {u.username!==currentUser&&(
-                  <button onClick={()=>delUser(u.id)} style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.4)",borderRadius:6,background:"none",cursor:"pointer",fontSize:11,color:T.danger,flexShrink:0}}>
+                  <button onClick={()=>delUser(u.id)} disabled={loading} style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.4)",borderRadius:6,background:"none",cursor:"pointer",fontSize:11,color:T.danger,flexShrink:0}}>
                     Delete
                   </button>
                 )}
@@ -1764,14 +1838,13 @@ function SettingsPanel({users,onSave,currentUser,onClose}) {
                 <option value="admin">Admin</option>
               </select>
             </div>
-            <button onClick={addUser} style={{padding:"8px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700,alignSelf:"end"}}>
-              Add
+            <button onClick={addUser} disabled={loading} style={{padding:"8px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:loading?"wait":"pointer",fontSize:12,fontWeight:700,alignSelf:"end",opacity:loading?0.6:1}}>
+              {loading?"…":"Add"}
             </button>
           </div>
         </div>
         <div style={{padding:"12px 20px",borderTop:"0.5px solid "+T.border,display:"flex",justifyContent:"flex-end",gap:10}}>
-          <button onClick={onClose} style={{padding:"7px 18px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>Cancel</button>
-          <button onClick={save} style={{padding:"7px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>Save changes</button>
+          <button onClick={onClose} style={{padding:"7px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>Done</button>
         </div>
       </div>
     </div>
@@ -1779,16 +1852,21 @@ function SettingsPanel({users,onSave,currentUser,onClose}) {
 }
 
 // ── Login ──────────────────────────────────────────────────────────────────────
-function Login({onLogin,users}) {
+function Login({onLogin}) {
   const [username,setUsername]=useState("");
   const [password,setPassword]=useState("");
   const [err,setErr]=useState("");
+  const [loading,setLoading]=useState(false);
   const inp={width:"100%",padding:"9px 12px",border:"1px solid "+T.border,borderRadius:7,fontSize:13,background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none"};
-  function tryLogin(){
-    const u=users.find(u=>u.username===username.trim()&&u.password===password);
-    if (!u){setErr("Invalid username or password.");return;}
-    setErr("");
-    onLogin(u.role,u.username);
+  async function tryLogin(){
+    if (!username.trim()||!password){setErr("Enter username and password.");return;}
+    setLoading(true);setErr("");
+    try{
+      const data=await apiLogin(username.trim(),password);
+      onLogin(data.role,data.username,data.token);
+    }catch(e){
+      setErr(e.message||"Login failed. Check credentials.");
+    }finally{setLoading(false);}
   }
   return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
@@ -1811,11 +1889,11 @@ function Login({onLogin,users}) {
               style={inp} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
           </div>
         </div>
-        <button onClick={tryLogin} style={{width:"100%",padding:"10px",background:T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:"pointer",fontSize:14,fontWeight:700}}>
-          Sign in
+        <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"10px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700}}>
+          {loading?"Signing in…":"Sign in"}
         </button>
         <p style={{fontSize:11,color:T.textMd,marginTop:16,marginBottom:0,textAlign:"center"}}>
-          Default admin: <code>admin</code> / <code>admin123</code>
+          Default: <code>admin</code> / <code>admin123</code> · Credentials set in Railway
         </p>
       </div>
     </div>
@@ -1823,7 +1901,7 @@ function Login({onLogin,users}) {
 }
 
 // ── Reports Manager (Admin tab) ────────────────────────────────────────────────
-function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId}) {
+function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload}) {
   if (!savedReports.length) return(
     <div style={{padding:40,textAlign:"center"}}>
       <div style={{fontSize:40,marginBottom:14}}>📋</div>
@@ -1864,7 +1942,7 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId}) {
                   color:r.id===publishedId?T.textLt:T.text,fontWeight:r.id===publishedId?700:400}}>
                 {r.id===publishedId?"Published":"Publish"}
               </button>
-              <button onClick={()=>onDelete(r.id)}
+              <button onClick={async()=>{if(confirm("Delete report \'"+r.name+"\'?")) await onDelete(r.id);}}
                 style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.danger}}>
                 Delete
               </button>
@@ -1877,58 +1955,145 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId}) {
 }
 
 // ── Root ───────────────────────────────────────────────────────────────────────
+// ── Helper: parse API report metadata into local shape ────────────────────────
+function parseReportMeta(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    rows: r.row_count||0,
+    fields: r.field_count||0,
+    savedAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+    config: typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{}),
+    cardFields: typeof r.card_fields==="string" ? JSON.parse(r.card_fields) : (r.card_fields||[]),
+    isPublished: !!r.is_published,
+    dataset: null, // rows loaded lazily on demand
+  };
+}
+
 export default function App() {
-  const [screen,setScreen]=useState("login");
+  const [screen,setScreen]=useState("loading"); // loading|login|admin|user
   const [savedReports,setSavedReports]=useState([]);
   const [publishedId,setPublishedId]=useState(null);
   const [currentUser,setCurrentUser]=useState(null);
-  const [users,setUsers]=useState([
-    {id:"u_admin",username:"admin",  password:"admin123",role:"admin"},
-    {id:"u_user1",username:"viewer", password:"view123", role:"user"},
-  ]);
+  const [loadErr,setLoadErr]=useState("");
+
+  // dataCache stores {id -> {rows,fields,numFields}} so we don't re-fetch
+  const dataCache=useRef({});
 
   const publishedReport=useMemo(()=>savedReports.find(r=>r.id===publishedId)||null,[savedReports,publishedId]);
 
-  function saveReport(reportData) {
-    const id="rpt_"+Date.now();
-    const entry={
-      id, name:reportData.config.name,
-      rows:reportData.dataset.rows.length,
-      fields:reportData.dataset.fields.length,
-      savedAt:Date.now(),
-      config:reportData.config,
-      dataset:reportData.dataset,
-      cardFields:reportData.cardFields||[],
-    };
-    setSavedReports(prev=>[...prev,entry]);
-    return id;
+  // ── Restore session from localStorage on mount ─────────────────────────────
+  useEffect(()=>{
+    const token=localStorage.getItem("rh_token");
+    const role=localStorage.getItem("rh_role");
+    const username=localStorage.getItem("rh_username");
+    if (token&&role&&username) {
+      setCurrentUser(username);
+      loadAllReports().then(()=>setScreen(role)).catch(()=>setScreen("login"));
+    } else {
+      setScreen("login");
+    }
+  },[]);
+
+  // ── Load report list from API ──────────────────────────────────────────────
+  async function loadAllReports() {
+    try {
+      const list=await getReports();
+      const entries=list.map(parseReportMeta);
+      setSavedReports(entries);
+      const pub=entries.find(r=>r.isPublished);
+      setPublishedId(pub?pub.id:null);
+    } catch(e) {
+      setLoadErr("Could not load reports: "+e.message);
+    }
   }
 
-  function deleteReport(id) {
+  // ── Lazy-load rows for a specific report ───────────────────────────────────
+  async function loadReportData(id) {
+    if (dataCache.current[id]) return dataCache.current[id];
+    const data=await getReportData(id); // {fields, numFields, rows}
+    // numFields comes back as array from JSON, convert to Set
+    const nf=new Set(Array.isArray(data.numFields)?data.numFields:Object.values(data.numFields||{}));
+    const result={rows:data.rows, fields:data.fields, numFields:nf};
+    dataCache.current[id]=result;
+    return result;
+  }
+
+  // ── Save report → POST to API, then refresh list ───────────────────────────
+  async function handleSaveReport(reportData) {
+    const {name,dataset,config,cardFields}=reportData;
+    const nfArr=[...(dataset.numFields instanceof Set?dataset.numFields:new Set(dataset.numFields||[]))];
+    const result=await createReport({
+      name,config,cardFields:cardFields||[],
+      rows:dataset.rows,fields:dataset.fields,numFields:nfArr
+    });
+    // Cache the data locally so we don't re-fetch immediately
+    dataCache.current[result.id]={rows:dataset.rows,fields:dataset.fields,numFields:dataset.numFields};
+    await loadAllReports();
+    return result.id;
+  }
+
+  // ── Delete report → DELETE from API ───────────────────────────────────────
+  async function handleDeleteReport(id) {
+    await apiDeleteReport(id);
+    delete dataCache.current[id];
     setSavedReports(prev=>prev.filter(r=>r.id!==id));
     if (publishedId===id) setPublishedId(null);
   }
 
-  function doLogin(role,username) {
+  // ── Publish report → PATCH to API ─────────────────────────────────────────
+  async function handlePublishReport(id) {
+    await apiPublishReport(id);
+    setPublishedId(id);
+    setSavedReports(prev=>prev.map(r=>({...r,isPublished:r.id===id})));
+  }
+
+  // ── Login / Logout ─────────────────────────────────────────────────────────
+  async function doLogin(role,username,token) {
+    localStorage.setItem("rh_role",role);
+    localStorage.setItem("rh_username",username);
+    // token already stored by apiLogin() in api.js
     setCurrentUser(username);
+    await loadAllReports();
     setScreen(role);
   }
 
+  function doLogout() {
+    apiLogout();
+    localStorage.removeItem("rh_role");
+    localStorage.removeItem("rh_username");
+    setCurrentUser(null);
+    setSavedReports([]);
+    setPublishedId(null);
+    dataCache.current={};
+    setScreen("login");
+  }
+
+  if (screen==="loading") return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,flexDirection:"column",gap:12}}>
+      <div style={{fontSize:36,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+      <div style={{fontWeight:600,color:T.primary}}>Loading ReportHub…</div>
+      {loadErr&&<div style={{fontSize:12,color:T.danger,maxWidth:300,textAlign:"center"}}>{loadErr}</div>}
+      <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+    </div>
+  );
+
   return screen==="login"
-    ?<Login onLogin={doLogin} users={users}/>
+    ?<Login onLogin={doLogin}/>
     :screen==="admin"
       ?<AdminView
-          onLogout={()=>{setScreen("login");setCurrentUser(null);}}
+          onLogout={doLogout}
           savedReports={savedReports}
           publishedId={publishedId}
-          onSaveReport={saveReport}
-          onPublishReport={setPublishedId}
-          onDeleteReport={deleteReport}
-          users={users}
-          onUpdateUsers={setUsers}
+          onSaveReport={handleSaveReport}
+          onPublishReport={handlePublishReport}
+          onDeleteReport={handleDeleteReport}
+          onLoadReportData={loadReportData}
+          onReloadReports={loadAllReports}
           currentUser={currentUser}/>
       :<UserView
-          onLogout={()=>{setScreen("login");setCurrentUser(null);}}
+          onLogout={doLogout}
           savedReports={savedReports}
-          publishedReport={publishedReport}/>;
+          publishedReport={publishedReport}
+          onLoadReportData={loadReportData}/>;
 }
