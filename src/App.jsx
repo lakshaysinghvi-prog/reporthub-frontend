@@ -316,10 +316,10 @@ function DrillColFilter({field, data, active, onChange, numFields, activeSort, o
 }
 
 // ── Drill-down panel ──────────────────────────────────────────────────────────
-function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
+function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,onSaveHiddenCols}) {
   const [page,setPage]=useState(0);
   const [pageSize,setPageSize]=useState(25); // 25|50|100|"all"
-  const [hiddenCols,setHiddenCols]=useState(new Set());
+  const [hiddenCols,setHiddenCols]=useState(()=>new Set(savedHiddenCols||[]));
   const [showColPicker,setShowColPicker]=useState(false);
   const [colFilters,setColFilters]=useState({}); // {field: [selectedValues]}
   const [rowSort,setRowSort]=useState({}); // {field: dir} — only one active at a time
@@ -387,7 +387,10 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
               <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,width:240,maxHeight:320,overflowY:"auto",boxShadow:"0 8px 24px rgba(92,45,26,0.2)",zIndex:600}}>
                 <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:11,fontWeight:700,color:T.primary}}>Show / hide columns</span>
-                  <button onClick={()=>setHiddenCols(new Set())} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
+                  <div style={{display:"flex",gap:8}}>
+                    {onSaveHiddenCols&&<button onClick={()=>{onSaveHiddenCols([...hiddenCols]);}} style={{fontSize:10,color:T.primary,background:"none",border:"none",cursor:"pointer",fontWeight:700}}>Save layout</button>}
+                    <button onClick={()=>setHiddenCols(new Set())} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
+                  </div>
                 </div>
                 {fields.map(f=>(
                   <label key={f} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",cursor:"pointer",fontSize:12,color:T.text,background:hiddenCols.has(f)?"rgba(92,45,26,0.04)":undefined}}>
@@ -409,7 +412,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
         {/* Table — full horizontal scroll, all columns, original order */}
         <div style={{overflowX:"auto",flex:1,overflowY:"auto"}}>
           <table style={{borderCollapse:"collapse",fontSize:12,tableLayout:"fixed",minWidth:"100%"}}>
-            <thead><tr style={{background:T.bgTableH}}>
+            <thead style={{position:"sticky",top:0,zIndex:5}}><tr style={{background:T.bgTableH}}>
               {visibleCols.map(f=>{
                 const fActive=(colFilters[f]||[]).length>0;
                 return(
@@ -743,12 +746,12 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
     if(from&&from!==cv)onColReorder(from,cv);
   };
   return(
-    <div style={{overflowX:"auto",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
+    <div style={{overflowX:"auto",overflowY:"auto",maxHeight:"70vh",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
       <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border}}>
         {onDrillDown?"Click any cell to drill down  ·  ":""}{onColReorder?"Drag column headers to reorder":""}
       </div>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
-        <thead>
+        <thead style={{position:"sticky",top:0,zIndex:5}}>
           {hasGroups&&(
             <tr>
               {rFs.map((rf,ri)=>(
@@ -827,9 +830,20 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
                     cursor:isDraggable?"grab":"default",
                     outline:dragOverCol===v.field?"2px dashed "+T.accent:"none",
                     position:"relative",width:colWidths["val_"+v.field]||undefined,minWidth:70}}>
-                  {isDraggable&&<span style={{opacity:0.4,fontSize:9,marginRight:3}}>{"⋮"}</span>}
-                  {v.field}
-                  <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:4}}>
+                    {isDraggable&&<span style={{opacity:0.4,fontSize:9}}>{"⋮"}</span>}
+                    <div style={{textAlign:"right"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
+                        {v.field}
+                        <button onClick={e=>{e.stopPropagation();setValSort(vs=>vs&&vs.field===v.field?(vs.dir==="asc"?{field:v.field,dir:"desc"}:null):{field:v.field,dir:"desc"});}}
+                          title={"Sort by "+v.field}
+                          style={{background:"none",border:"none",cursor:"pointer",color:"rgba(245,239,230,0.7)",fontSize:11,padding:"0 2px",lineHeight:1,flexShrink:0}}>
+                          {valSort&&valSort.field===v.field?(valSort.dir==="desc"?"↓":"↑"):"⇅"}
+                        </button>
+                      </div>
+                      <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
+                    </div>
+                  </div>
                   <ResizeHandle onMouseDown={e=>startColResize("val_"+v.field,e)}/>
                 </th>
               );
@@ -905,6 +919,7 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
   const [numFmt,setNumFmt]=useState("Cr");
   const [colOrder,setColOrder]=useState(null);
   const [adHocFields,setAdHocFields]=useState([]); // extra filters user adds in view mode
+  const [drillHiddenCols,setDrillHiddenCols]=useState([]); // saved column layout for drill-down
   const [pivotFilters,setPivotFilters]=useState({}); // {rowFieldIdx: [selectedValues]}
   const [pivotSort,setPivotSort]=useState(null); // {fieldIdx, dir}
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
@@ -1029,7 +1044,10 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
         onPivotSort={setPivotSort}
         onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
 
-      {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt} onClose={()=>setDrill(null)}/>}
+      {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt}
+        savedHiddenCols={drillHiddenCols}
+        onSaveHiddenCols={cols=>{setDrillHiddenCols(cols);}}
+        onClose={()=>setDrill(null)}/>}
     </div>
   );
 }
@@ -1426,6 +1444,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [toast,setToast]=useState("");
   const [showSettings,setShowSettings]=useState(false);
   const [apiLoading,setApiLoading]=useState(false);
+  const [activeReportId,setActiveReportId]=useState(null); // id of report currently open in builder
+  const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
 
   const effectiveNumFields=useMemo(()=>{
     if (!dataset) return new Set();
@@ -1434,16 +1454,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     return s;
   },[dataset,typeOverrides]);
 
-  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setTab("builder");}
+  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setTab("builder");}
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
     if (!r) return;
     setApiLoading(true);
     try {
-      // Load rows from API (cached after first load)
       const data=await onLoadReportData(id);
       const ds={rows:data.rows,fields:data.fields,numFields:data.numFields};
       setDataset(ds);setConfig(r.config);setCardFields(r.cardFields||[]);setTypeOverrides({});
+      setActiveReportId(id);
       setTab("builder");
     } catch(e){showToast("Load error: "+e.message);}
     finally{setApiLoading(false);}
@@ -1451,10 +1471,24 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
   async function doSave() {
     if (!dataset||!config){showToast("Nothing to save yet.");return;}
+    // If this dataset came from an existing saved report, offer overwrite or new
+    if (activeReportId) {
+      setSaveDialog(true);
+    } else {
+      await commitSave(false);
+    }
+  }
+  async function commitSave(overwrite) {
+    setSaveDialog(false);
     setApiLoading(true);
     try{
-      await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
-      showToast("Report saved!");
+      if (overwrite&&activeReportId) {
+        // Delete old then save with same name (Railway API doesn't have PATCH for full data)
+        await onDeleteReport(activeReportId);
+      }
+      const id=await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
+      setActiveReportId(id);
+      showToast(overwrite?"Report updated!":"Report saved as new!");
     }catch(e){showToast("Save failed: "+e.message);}
     finally{setApiLoading(false);}
   }
@@ -1645,6 +1679,27 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           onPublish={doPublish}/>
       )}
       {showSettings&&<SettingsPanel currentUser={currentUser} onClose={()=>setShowSettings(false)}/>}
+      {saveDialog&&(
+        <div style={{position:"fixed",inset:0,zIndex:600,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:28,width:"min(420px,90vw)",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:16,color:T.primary,marginBottom:8}}>Save Report</div>
+            <div style={{fontSize:13,color:T.textMd,marginBottom:20,lineHeight:1.6}}>
+              This report was previously saved. Do you want to <strong>overwrite</strong> the existing version, or <strong>save as a new</strong> report?
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              <button onClick={()=>setSaveDialog(false)} style={{padding:"8px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>
+                Cancel
+              </button>
+              <button onClick={()=>commitSave(false)} style={{padding:"8px 16px",background:"none",border:"1px solid "+T.primary,borderRadius:7,cursor:"pointer",fontSize:13,color:T.primary,fontWeight:600}}>
+                Save as New
+              </button>
+              <button onClick={()=>commitSave(true)} style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>
+                Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1892,9 +1947,7 @@ function Login({onLogin}) {
         <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"10px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700}}>
           {loading?"Signing in…":"Sign in"}
         </button>
-        <p style={{fontSize:11,color:T.textMd,marginTop:16,marginBottom:0,textAlign:"center"}}>
-          Default: <code>admin</code> / <code>admin123</code> · Credentials set in Railway
-        </p>
+
       </div>
     </div>
   );
