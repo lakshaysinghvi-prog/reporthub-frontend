@@ -666,6 +666,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
   // ── ALL hooks must come before any conditional return (Rules of Hooks) ──────
   const [dragOverCol,setDragOverCol]=useState(null);
   const [colWidths,startColResize]=useColResize(120);
+  const [valSort,setValSort]=useState(null); // {field,dir:"asc"|"desc"} — sort rows by metric
 
   // Derive vals safely — null when result not ready
   const vals = result&&!result.error ? result.vals : [];
@@ -716,6 +717,19 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
 
   const {cells,colTotals,grandTotals,rFs,cF}=result;
   const nV=vals.length;
+  // Apply value-column sort: reorder rows by a metric descending/ascending
+  const sortedRowKeys=valSort
+    ? (()=>{
+        const vi=vals.findIndex(v=>v.field===valSort.field);
+        if (vi===-1) return rowKeys;
+        return [...rowKeys].sort((a,b)=>{
+          const av=((cells[a.join(" ")]||{})["__total__"]||[])[vi]||0;
+          const bv=((cells[b.join(" ")]||{})["__total__"]||[])[vi]||0;
+          return valSort.dir==="asc"?av-bv:bv-av;
+        });
+      })()
+    : rowKeys;
+
   // Use external colOrder if provided (for column group drag-reorder), else default
   const orderedColVals=colOrder&&colOrder.length===colVals.length?colOrder:colVals;
   const totalCells=rowKeys.length*Math.max(orderedColVals.length,1)*nV;
@@ -851,7 +865,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
           </tr>
         </thead>
         <tbody>
-          {rowKeys.map((rk,ri)=>{
+          {sortedRowKeys.map((rk,ri)=>{
             const rkStr=rk.join("\0");
             return(
               <tr key={rkStr} style={{background:ri%2===0?T.bgCard:T.bgAlt}}>
