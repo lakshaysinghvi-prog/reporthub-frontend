@@ -1793,9 +1793,9 @@ function SettingsPanel({currentUser,onClose}) {
         <div style={{padding:20,overflowY:"auto",flex:1}}>
           {toast&&<div style={{padding:"8px 14px",background:"rgba(45,106,79,0.15)",border:"1px solid rgba(45,106,79,0.4)",borderRadius:7,fontSize:12,color:T.success,marginBottom:14}}>{toast}</div>}
           {/* Existing users */}
-          <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Existing users ({localUsers.length})</div>
+          <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Existing users ({users.length})</div>
           <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            {localUsers.map(u=>(
+            {users.map(u=>(
               <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:T.bgStat,borderRadius:8,border:"1px solid "+T.border}}>
                 <div style={{width:32,height:32,borderRadius:8,background:u.role==="admin"?T.primary:T.secondary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:T.textLt,fontWeight:700,flexShrink:0}}>
                   {u.role==="admin"?"A":"U"}
