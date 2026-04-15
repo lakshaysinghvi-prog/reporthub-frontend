@@ -153,7 +153,9 @@ function doAgg(rows,field,type){
 
 function runPivot(data,config,filters) {
   try {
-    const filtered=data.filter(row=>config.filters.every(f=>{const s=filters[f]||[];return !s.length||s.includes(String(row[f]||""));}));
+    // Filter by ALL active filters — configured slicers AND card filter clicks
+    const allFilterKeys=[...new Set([...config.filters,...Object.keys(filters).filter(k=>filters[k]&&filters[k].length)])];
+    const filtered=data.filter(row=>allFilterKeys.every(f=>{const s=filters[f]||[];return !s.length||s.includes(String(row[f]||""));}));
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>doAgg(sub,v.field,v.agg));
@@ -504,6 +506,8 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt})
     flexShrink:0,padding:"10px 16px",borderRadius:8,textAlign:"left",cursor:"pointer",minWidth:110,
     border:on?"2px solid "+T.primary:"1px solid "+T.border,
     background:on?T.primary:T.bgCard,
+    boxShadow:on?"0 2px 8px rgba(92,45,26,0.25)":"none",
+    transform:on?"translateY(-1px)":"none",
     transition:"all 0.15s",
   });
   return(
@@ -520,7 +524,7 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt})
           const on=active.includes(val);
           const rows=data.filter(r=>String(r[field]||"")===val);
           return(
-            <button key={val} onClick={()=>on?onFilter(active.filter(x=>x!==val)):onFilter([...active,val])} style={cardStyle(on)}>
+            <button key={val} onClick={()=>on?onFilter([]):onFilter([val])} style={cardStyle(on)}>
               <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
               <div style={{fontSize:15,fontWeight:700,color:on?T.textLt:T.numColor}}>
                 {fmtNum(doAgg(rows,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
@@ -927,13 +931,13 @@ function FormatSelector({value,onChange}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange}) {
   const [filters,setFilters]=useState({});
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
   const [colOrder,setColOrder]=useState(null);
   const [adHocFields,setAdHocFields]=useState([]); // extra filters user adds in view mode
-  const [drillHiddenCols,setDrillHiddenCols]=useState([]); // saved column layout for drill-down
+  const [drillHiddenCols,setDrillHiddenCols]=useState(()=>config.drillHiddenCols||[]); // init from saved config
   const [pivotFilters,setPivotFilters]=useState({}); // {rowFieldIdx: [selectedValues]}
   const [pivotSort,setPivotSort]=useState(null); // {fieldIdx, dir}
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
@@ -1060,7 +1064,7 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
 
       {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt}
         savedHiddenCols={drillHiddenCols}
-        onSaveHiddenCols={cols=>{setDrillHiddenCols(cols);}}
+        onSaveHiddenCols={cols=>{setDrillHiddenCols(cols);onDrillHiddenColsChange&&onDrillHiddenColsChange(cols);}}
         onClose={()=>setDrill(null)}/>}
     </div>
   );
@@ -1661,7 +1665,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         <div style={{padding:20}}>
           <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
-          <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}/>
+          <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
+            onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}/>
         </div>
       )}
 
@@ -1719,15 +1724,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 }
 
 // ── User view ──────────────────────────────────────────────────────────────────
-function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
+function UserView({onLogout,savedReports,onLoadReportData}) {
   const [activeId,setActiveId]=useState(null);
   const [loadedData,setLoadedData]=useState({}); // {reportId -> {rows,fields,numFields}}
   const [dataLoading,setDataLoading]=useState(false);
 
+  const publishedReports=useMemo(()=>savedReports.filter(r=>r.isPublished),[savedReports]);
   const currentMeta=useMemo(()=>{
-    if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReport;
-    return publishedReport;
-  },[activeId,savedReports,publishedReport]);
+    if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReports[0]||null;
+    return publishedReports[0]||null;
+  },[activeId,savedReports,publishedReports]);
 
   // Load data whenever the selected report changes
   useEffect(()=>{
@@ -1743,12 +1749,12 @@ function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
 
-  if (!publishedReport&&!savedReports.length) return(
+  if (!publishedReports.length) return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage}}>
       <div style={{textAlign:"center"}}>
         <div style={{fontSize:44,marginBottom:14}}>📋</div>
-        <div style={{fontWeight:700,fontSize:16,color:T.text,marginBottom:8}}>No reports available yet</div>
-        <div style={{fontSize:13,color:T.textMd}}>Ask your admin to upload data and publish a report.</div>
+        <div style={{fontWeight:700,fontSize:16,color:T.text,marginBottom:8}}>No published reports yet</div>
+        <div style={{fontSize:13,color:T.textMd}}>Ask your admin to publish a report from the Reports tab.</div>
       </div>
     </div>
   );
@@ -1756,15 +1762,14 @@ function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
   return(
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="User" onLogout={onLogout}>
-        {savedReports.length>0&&(
+        {publishedReports.length>0&&(
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:11,color:"rgba(245,239,230,0.6)"}}>Report:</span>
-            <select value={activeId||(publishedReport?"published":"")}
-              onChange={e=>setActiveId(e.target.value==="published"?null:e.target.value)}
+            <select value={activeId||publishedReports[0]?.id||""}
+              onChange={e=>setActiveId(e.target.value)}
               style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,background:"rgba(255,255,255,0.1)",
-                color:T.textLt,fontSize:12,cursor:"pointer",outline:"none",maxWidth:200}}>
-              {publishedReport&&<option value="published">{publishedReport.name} (published)</option>}
-              {savedReports.filter(r=>!r.isPublished).map(r=>(
+                color:T.textLt,fontSize:12,cursor:"pointer",outline:"none",maxWidth:220}}>
+              {publishedReports.map(r=>(
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
@@ -1782,7 +1787,7 @@ function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
         <div style={{padding:20}}>
           <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:4}}>
             <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
-            {currentMeta.isPublished&&<span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>}
+            <span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>
           </div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>
             {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields · Click cells to drill down
@@ -1984,9 +1989,9 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {savedReports.map(r=>(
-          <div key={r.id} style={{background:T.bgCard,border:"1px solid "+(r.id===publishedId?T.primary:T.border),borderRadius:10,padding:"14px 18px",display:"flex",alignItems:"center",gap:14}}>
-            <div style={{width:40,height:40,background:r.id===publishedId?T.primary:T.bgStat,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
-              {r.id===publishedId?"📤":"📊"}
+          <div key={r.id} style={{background:T.bgCard,border:"1px solid "+(r.isPublished?T.primary:T.border),borderRadius:10,padding:"14px 18px",display:"flex",alignItems:"center",gap:14}}>
+            <div style={{width:40,height:40,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
+              {r.isPublished?"📤":"📊"}
             </div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:700,fontSize:14,color:T.text,marginBottom:2}}>{r.name}</div>
@@ -2003,11 +2008,12 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload
                 style={{padding:"5px 13px",border:"1px solid "+T.border,borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.text,fontWeight:500}}>
                 Open
               </button>
-              <button onClick={()=>onPublish(r.id)}
-                style={{padding:"5px 13px",border:"1px solid "+(r.id===publishedId?T.primary:T.border),borderRadius:6,
-                  background:r.id===publishedId?T.primary:"none",cursor:"pointer",fontSize:12,
-                  color:r.id===publishedId?T.textLt:T.text,fontWeight:r.id===publishedId?700:400}}>
-                {r.id===publishedId?"Published":"Publish"}
+              <button onClick={async()=>await onPublish(r.id)}
+                style={{padding:"5px 13px",border:"1px solid "+(r.isPublished?T.primary:T.border),borderRadius:6,
+                  background:r.isPublished?T.primary:"none",cursor:"pointer",fontSize:12,
+                  color:r.isPublished?T.textLt:T.text,fontWeight:r.isPublished?700:400}}
+                title={r.isPublished?"Click to unpublish":"Click to publish to users"}>
+                {r.isPublished?"✓ Published":"Publish"}
               </button>
               <button onClick={async()=>{if(confirm("Delete report \'"+r.name+"\'?")) await onDelete(r.id);}}
                 style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.danger}}>
@@ -2108,11 +2114,11 @@ export default function App() {
     if (publishedId===id) setPublishedId(null);
   }
 
-  // ── Publish report → PATCH to API ─────────────────────────────────────────
+  // ── Publish/unpublish report → PATCH to API (toggle) ─────────────────────
   async function handlePublishReport(id) {
-    await apiPublishReport(id);
-    setPublishedId(id);
-    setSavedReports(prev=>prev.map(r=>({...r,isPublished:r.id===id})));
+    const res=await apiPublishReport(id);
+    // Reload full list so isPublished reflects server truth for all reports
+    await loadAllReports();
   }
 
   // ── Login / Logout ─────────────────────────────────────────────────────────
@@ -2161,6 +2167,5 @@ export default function App() {
       :<UserView
           onLogout={doLogout}
           savedReports={savedReports}
-          publishedReport={publishedReport}
           onLoadReportData={loadReportData}/>;
 }
