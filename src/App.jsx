@@ -3,7 +3,8 @@ import _ from "lodash";
 // API module — calls Railway backend. Stripped in standalone HTML (functions are global there).
 import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePassword,
          deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
-         publishReport as apiPublishReport, getReportData } from "./api.js";
+         publishReport as apiPublishReport, unpublishReport as apiUnpublishReport,
+         getReportData } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -326,6 +327,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
   const [colFilters,setColFilters]=useState({}); // {field: [selectedValues]}
   const [rowSort,setRowSort]=useState({}); // {field: dir} — only one active at a time
   const [colWidths,startColResize]=useColResize(130);
+  const [layoutSaved,setLayoutSaved]=useState(false); // flash confirmation after save
   const {rowKey,colVal,rFs,cF,metricLabel}=target;
   const baseRows=useMemo(()=>data.filter(row=>
     rFs.every((f,i)=>String(row[f]||"")===rowKey[i])&&
@@ -390,7 +392,19 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
                 <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:11,fontWeight:700,color:T.primary}}>Show / hide columns</span>
                   <div style={{display:"flex",gap:8}}>
-                    {onSaveHiddenCols&&<button onClick={()=>{onSaveHiddenCols([...hiddenCols]);}} style={{fontSize:10,color:T.primary,background:"none",border:"none",cursor:"pointer",fontWeight:700}}>Save layout</button>}
+                    {onSaveHiddenCols&&(
+                      layoutSaved
+                        ? <span style={{fontSize:10,color:T.success,fontWeight:700,display:"flex",alignItems:"center",gap:3}}>
+                            ✓ Layout saved
+                          </span>
+                        : <button onClick={()=>{
+                            onSaveHiddenCols([...hiddenCols]);
+                            setLayoutSaved(true);
+                            setTimeout(()=>setLayoutSaved(false),2500);
+                          }} style={{fontSize:10,color:T.primary,background:"none",border:"1px solid "+T.primary,borderRadius:4,padding:"2px 8px",cursor:"pointer",fontWeight:700}}>
+                            Save layout
+                          </button>
+                    )}
                     <button onClick={()=>setHiddenCols(new Set())} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
                   </div>
                 </div>
@@ -406,10 +420,15 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
           </div>
           <button onClick={onClose} style={{width:28,height:28,borderRadius:6,border:"none",background:"rgba(255,255,255,0.15)",cursor:"pointer",fontSize:16,color:T.textLt,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
-        {/* Hint + clear column filters */}
-        <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border,flexShrink:0,display:"flex",alignItems:"center",gap:10}}>
-          <span>Columns in original Excel order · Click ⋏ on column headers to filter/sort · Scroll right to see all</span>
-          {hasColFilters&&<button onClick={()=>setColFilters({})} style={{fontSize:10,color:T.danger,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",flexShrink:0}}>Clear column filters</button>}
+        {/* Hint + status bar */}
+        <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:layoutSaved?"rgba(45,106,79,0.1)":T.bgStat,borderBottom:"0.5px solid "+T.border,flexShrink:0,display:"flex",alignItems:"center",gap:10,transition:"background 0.3s"}}>
+          {layoutSaved
+            ? <span style={{color:T.success,fontWeight:600,display:"flex",alignItems:"center",gap:5}}>
+                ✓ Column layout saved — this will be remembered when the report is saved
+              </span>
+            : <span>Columns in original Excel order · Click ⋏ on headers to filter/sort · Scroll right to see all</span>
+          }
+          {!layoutSaved&&hasColFilters&&<button onClick={()=>setColFilters({})} style={{fontSize:10,color:T.danger,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",flexShrink:0}}>Clear column filters</button>}
         </div>
         {/* Table — full horizontal scroll, all columns, original order */}
         <div style={{overflowX:"auto",flex:1,overflowY:"auto"}}>
@@ -498,10 +517,15 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
 }
 
 // ── Quick filter cards ─────────────────────────────────────────────────────────
-function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt}) {
+function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields}) {
   const opts=useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
+  const isNumericField=numFields&&numFields.has(field);
+  const tooManyOpts=opts.length>20;
+  const defaultMode=(isNumericField||tooManyOpts)?"summary":"breakdown";
+  const [mode,setMode]=useState(defaultMode);
   const active=activeFilters||[];
   const allActive=active.length===0;
+
   const cardStyle=(on)=>({
     flexShrink:0,padding:"10px 16px",borderRadius:8,textAlign:"left",cursor:"pointer",minWidth:110,
     border:on?"2px solid "+T.primary:"1px solid "+T.border,
@@ -510,22 +534,62 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt})
     transform:on?"translateY(-1px)":"none",
     transition:"all 0.15s",
   });
+
+  if (mode==="summary") {
+    const totalVal=fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt);
+    return(
+      <div style={{marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
+          {!isNumericField&&!tooManyOpts&&(
+            <button onClick={()=>setMode("breakdown")} style={{fontSize:10,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:4,padding:"1px 7px",cursor:"pointer"}}>
+              Show breakdown ▸
+            </button>
+          )}
+          {tooManyOpts&&!isNumericField&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>{opts.length} values — use slicer for filtering</span>}
+          {isNumericField&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>Numeric field — showing aggregate</span>}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <div style={{...cardStyle(false),cursor:"default",background:T.bgStat,border:"1px solid "+T.border}}>
+            <div style={{fontSize:10,color:T.textMd,marginBottom:3}}>{primaryVal.agg} of {primaryVal.field}</div>
+            <div style={{fontSize:18,fontWeight:700,color:T.numColor}}>{totalVal}</div>
+            <div style={{fontSize:10,color:T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+          </div>
+          {!allActive&&(
+            <button onClick={()=>onFilter([])} style={{...cardStyle(false),border:"1px dashed "+T.borderDk}}>
+              <div style={{fontSize:10,color:T.textMd,marginBottom:3}}>Active filter</div>
+              <div style={{fontSize:12,color:T.accent,fontWeight:700,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{active.join(", ")}</div>
+              <div style={{fontSize:10,color:T.textMd,marginTop:2}}>Click to clear</div>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return(
     <div style={{marginBottom:16}}>
-      <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:8}}>{field}</div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
+        <button onClick={()=>setMode("summary")} style={{fontSize:10,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:4,padding:"1px 7px",cursor:"pointer"}}>
+          Summarize ◂
+        </button>
+        {!allActive&&<button onClick={()=>onFilter([])} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear</button>}
+      </div>
       <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
         <button onClick={()=>onFilter([])} style={cardStyle(allActive)}>
           <div style={{fontSize:10,color:allActive?T.textLt:T.textMd,marginBottom:3}}>All</div>
           <div style={{fontSize:15,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
             {fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
           </div>
+          <div style={{fontSize:10,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
         </button>
         {opts.map(val=>{
           const on=active.includes(val);
           const rows=data.filter(r=>String(r[field]||"")===val);
           return(
             <button key={val} onClick={()=>on?onFilter([]):onFilter([val])} style={cardStyle(on)}>
-              <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
+              <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
               <div style={{fontSize:15,fontWeight:700,color:on?T.textLt:T.numColor}}>
                 {fmtNum(doAgg(rows,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
               </div>
@@ -537,8 +601,6 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt})
     </div>
   );
 }
-
-// ── Slicer — Excel-style with sort A-Z / Z-A / numeric ───────────────────────
 function Slicer({field,active,onChange,data}) {
   const [open,setOpen]=useState(false);
   const [search,setSearch]=useState("");
@@ -1010,7 +1072,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
       {/* Card filters */}
       {(cardFields||[]).map(f=>(
         <QuickFilterCards key={f} field={f} data={data} activeFilters={filters[f]||[]}
-          onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt}/>
+          onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt} numFields={numFields}/>
       ))}
 
       {/* Slicers — configured + ad-hoc */}
@@ -1452,7 +1514,7 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
 }
 
 // ── Admin View ─────────────────────────────────────────────────────────────────
-function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onDeleteReport,onLoadReportData,onReloadReports,currentUser}) {
+function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onUnpublishReport,onDeleteReport,onLoadReportData,onReloadReports,currentUser}) {
   const libs=useLibs();
   const [dataset,setDataset]=useState(null);
   const [config,setConfig]=useState(null);
@@ -1514,8 +1576,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     setApiLoading(true);
     try{
       await onPublishReport(id);
-      showToast("Report published to users!");
+      showToast("Report published!");
     }catch(e){showToast("Publish failed: "+e.message);}
+    finally{setApiLoading(false);}
+  }
+  async function doUnpublish(id) {
+    setApiLoading(true);
+    try{
+      await onUnpublishReport(id);
+      showToast("Report unpublished.");
+    }catch(e){showToast("Unpublish failed: "+e.message);}
     finally{setApiLoading(false);}
   }
 
@@ -1695,7 +1765,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           publishedId={publishedId}
           onOpen={openSavedReport}
           onDelete={onDeleteReport}
-          onPublish={doPublish}/>
+          onPublish={doPublish}
+          onUnpublish={doUnpublish}/>
       )}
       {showSettings&&<SettingsPanel currentUser={currentUser} onClose={()=>setShowSettings(false)}/>}
       {saveDialog&&(
@@ -1973,7 +2044,7 @@ function Login({onLogin}) {
 }
 
 // ── Reports Manager (Admin tab) ────────────────────────────────────────────────
-function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload}) {
+function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishedId,onReload}) {
   if (!savedReports.length) return(
     <div style={{padding:40,textAlign:"center"}}>
       <div style={{fontSize:40,marginBottom:14}}>📋</div>
@@ -2008,13 +2079,20 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload
                 style={{padding:"5px 13px",border:"1px solid "+T.border,borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.text,fontWeight:500}}>
                 Open
               </button>
-              <button onClick={async()=>await onPublish(r.id)}
-                style={{padding:"5px 13px",border:"1px solid "+(r.isPublished?T.primary:T.border),borderRadius:6,
-                  background:r.isPublished?T.primary:"none",cursor:"pointer",fontSize:12,
-                  color:r.isPublished?T.textLt:T.text,fontWeight:r.isPublished?700:400}}
-                title={r.isPublished?"Click to unpublish":"Click to publish to users"}>
-                {r.isPublished?"✓ Published":"Publish"}
-              </button>
+              {r.isPublished
+                ? <button onClick={async()=>await onUnpublish(r.id)}
+                    style={{padding:"5px 13px",border:"1px solid "+T.primary,borderRadius:6,
+                      background:T.primary,cursor:"pointer",fontSize:12,color:T.textLt,fontWeight:700}}
+                    title="Click to unpublish">
+                    ✓ Published
+                  </button>
+                : <button onClick={async()=>await onPublish(r.id)}
+                    style={{padding:"5px 13px",border:"1px solid "+T.border,borderRadius:6,
+                      background:"none",cursor:"pointer",fontSize:12,color:T.text}}
+                    title="Publish to users">
+                    Publish
+                  </button>
+              }
               <button onClick={async()=>{if(confirm("Delete report \'"+r.name+"\'?")) await onDelete(r.id);}}
                 style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.danger}}>
                 Delete
@@ -2114,10 +2192,14 @@ export default function App() {
     if (publishedId===id) setPublishedId(null);
   }
 
-  // ── Publish/unpublish report → PATCH to API (toggle) ─────────────────────
+  // ── Publish report → always sets published=true ───────────────────────────
   async function handlePublishReport(id) {
-    const res=await apiPublishReport(id);
-    // Reload full list so isPublished reflects server truth for all reports
+    await apiPublishReport(id);
+    await loadAllReports();
+  }
+  // ── Unpublish report → always sets published=false ─────────────────────────
+  async function handleUnpublishReport(id) {
+    await apiUnpublishReport(id);
     await loadAllReports();
   }
 
@@ -2160,6 +2242,7 @@ export default function App() {
           publishedId={publishedId}
           onSaveReport={handleSaveReport}
           onPublishReport={handlePublishReport}
+          onUnpublishReport={handleUnpublishReport}
           onDeleteReport={handleDeleteReport}
           onLoadReportData={loadReportData}
           onReloadReports={loadAllReports}

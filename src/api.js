@@ -74,6 +74,9 @@ export const deleteReport = (id) =>
 export const publishReport = (id) =>
   api(`/api/reports/${id}/publish`, { method: 'PATCH' });
 
+export const unpublishReport = (id) =>
+  api(`/api/reports/${id}/unpublish`, { method: 'PATCH' });
+
 export const getReportData = (id) =>
   api(`/api/reports/${id}/data`);
 
