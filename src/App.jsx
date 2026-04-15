@@ -538,43 +538,42 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
   if (mode==="summary") {
     const totalVal=fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt);
     return(
-      <div style={{marginBottom:16}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+      <div>
+        {/* Field label + mode toggle */}
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
           {!isNumericField&&!tooManyOpts&&(
-            <button onClick={()=>setMode("breakdown")} style={{fontSize:10,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:4,padding:"1px 7px",cursor:"pointer"}}>
-              Show breakdown ▸
+            <button onClick={()=>setMode("breakdown")} style={{fontSize:9,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+              Expand ▸
             </button>
           )}
-          {tooManyOpts&&!isNumericField&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>{opts.length} values — use slicer for filtering</span>}
-          {isNumericField&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>Numeric field — showing aggregate</span>}
+          {isNumericField&&<span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>Metric total</span>}
+          {tooManyOpts&&!isNumericField&&<span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>{opts.length} values</span>}
         </div>
-        <div style={{display:"flex",gap:8}}>
-          <div style={{...cardStyle(false),cursor:"default",background:T.bgStat,border:"1px solid "+T.border}}>
-            <div style={{fontSize:10,color:T.textMd,marginBottom:3}}>{primaryVal.agg} of {primaryVal.field}</div>
-            <div style={{fontSize:18,fontWeight:700,color:T.numColor}}>{totalVal}</div>
-            <div style={{fontSize:10,color:T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        {/* Summary card — clickable to clear filter if active */}
+        <button onClick={allActive?undefined:()=>onFilter([])}
+          style={{...cardStyle(!allActive&&active.length>0),width:"100%",textAlign:"left",
+            cursor:allActive?"default":"pointer",
+            background:!allActive?T.primary:T.bgStat,
+            border:"1px solid "+(allActive?T.border:T.primary)}}>
+          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.7)",marginBottom:3}}>
+            {allActive?primaryVal.agg+" of "+primaryVal.field:"Filtered: "+active.join(", ")+" · click to clear"}
           </div>
-          {!allActive&&(
-            <button onClick={()=>onFilter([])} style={{...cardStyle(false),border:"1px dashed "+T.borderDk}}>
-              <div style={{fontSize:10,color:T.textMd,marginBottom:3}}>Active filter</div>
-              <div style={{fontSize:12,color:T.accent,fontWeight:700,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{active.join(", ")}</div>
-              <div style={{fontSize:10,color:T.textMd,marginTop:2}}>Click to clear</div>
-            </button>
-          )}
-        </div>
+          <div style={{fontSize:17,fontWeight:700,color:allActive?T.numColor:T.textLt}}>{totalVal}</div>
+          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        </button>
       </div>
     );
   }
 
   return(
-    <div style={{marginBottom:16}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
         <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
-        <button onClick={()=>setMode("summary")} style={{fontSize:10,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:4,padding:"1px 7px",cursor:"pointer"}}>
-          Summarize ◂
+        <button onClick={()=>setMode("summary")} style={{fontSize:9,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+          ◂ Collapse
         </button>
-        {!allActive&&<button onClick={()=>onFilter([])} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear</button>}
+        {!allActive&&<button onClick={()=>onFilter([])} style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear</button>}
       </div>
       <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
         <button onClick={()=>onFilter([])} style={cardStyle(allActive)}>
@@ -1069,11 +1068,26 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
         </div>
       )}
 
-      {/* Card filters */}
-      {(cardFields||[]).map(f=>(
-        <QuickFilterCards key={f} field={f} data={data} activeFilters={filters[f]||[]}
-          onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt} numFields={numFields}/>
-      ))}
+      {/* Card filter container — all card groups in one horizontal panel */}
+      {(cardFields||[]).length>0&&(
+        <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:"12px 16px",marginBottom:14,
+          overflowX:"auto"}}>
+          <div style={{display:"flex",gap:24,minWidth:0,alignItems:"flex-start"}}>
+            {cardFields.map(f=>{
+              // Cross-filter: show data filtered by all OTHER active card/slicer filters
+              const otherFilters=Object.fromEntries(Object.entries(filters).filter(([k])=>k!==f));
+              const otherKeys=[...new Set([...config.filters,...Object.keys(otherFilters).filter(k=>otherFilters[k]&&otherFilters[k].length)])];
+              const cardData=otherKeys.length?data.filter(row=>otherKeys.every(ff=>{const s=otherFilters[ff]||[];return !s.length||s.includes(String(row[ff]||""));})):data;
+              return(
+                <div key={f} style={{flexShrink:0,minWidth:160,maxWidth:340}}>
+                  <QuickFilterCards field={f} data={cardData} activeFilters={filters[f]||[]}
+                    onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt} numFields={numFields}/>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Slicers — configured + ad-hoc */}
       {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0)&&(
