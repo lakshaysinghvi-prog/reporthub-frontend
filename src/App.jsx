@@ -517,60 +517,75 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
 }
 
 // ── Quick filter cards ─────────────────────────────────────────────────────────
-function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields,allVals}) {
-  const opts=useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
-  const isNumericField=numFields&&numFields.has(field);
-  const tooManyOpts=opts.length>20;
-  const defaultMode=(isNumericField||tooManyOpts)?"summary":"breakdown";
-  const [mode,setMode]=useState(defaultMode);
-  const active=activeFilters||[];
-  const allActive=active.length===0;
+function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields,cardAgg}) {
+  // Determine if this card field is numeric (KPI mode) or dimension (filter mode)
+  const isNumericField = numFields && numFields.has(field);
+  // For numeric fields, use the card's own configured agg (sum/count/avg/min/max)
+  // For dimension fields, use primaryVal metric broken down by dimension values
+  const displayVal = isNumericField
+    ? {field, agg: cardAgg||"sum"}  // use card-specific agg
+    : primaryVal;                    // use primary metric per dimension value
 
-  const cardStyle=(on)=>({
-    flexShrink:0,padding:"10px 16px",borderRadius:8,textAlign:"left",cursor:"pointer",minWidth:110,
-    border:on?"2px solid "+T.primary:"1px solid "+T.border,
-    background:on?T.primary:T.bgCard,
-    boxShadow:on?"0 2px 8px rgba(92,45,26,0.25)":"none",
-    transform:on?"translateY(-1px)":"none",
-    transition:"all 0.15s",
-  });
+  const opts = useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
+  const tooManyOpts = opts.length > 20;
+  const defaultMode = (isNumericField || tooManyOpts) ? "summary" : "breakdown";
+  const [mode, setMode] = useState(defaultMode);
+  const active = activeFilters || [];
+  const allActive = active.length === 0;
 
-  if (mode==="summary") {
-    const totalVal=fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt);
-    return(
+  const cardBase = {
+    flexShrink:0, padding:"10px 14px", borderRadius:8, textAlign:"left",
+    cursor:"pointer", border:"1px solid "+T.border, transition:"all 0.15s",
+  };
+  const cardOn  = {...cardBase, background:T.primary, border:"2px solid "+T.primary,
+    boxShadow:"0 2px 8px rgba(92,45,26,0.25)", transform:"translateY(-1px)"};
+  const cardOff = {...cardBase, background:T.bgCard};
+  const cardKpi = {...cardBase, background:T.bgStat, cursor:"default"};
+
+  // ── NUMERIC FIELD: single KPI tile, no click filter ──────────────────────────
+  if (isNumericField) {
+    const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
+    return (
       <div>
-        {/* Field label + mode toggle */}
+        <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+          {field} <span style={{fontWeight:400,fontSize:9}}>Metric total</span>
+        </div>
+        <div style={cardKpi}>
+          <div style={{fontSize:9,color:T.textMd,marginBottom:2}}>{displayVal.agg} of {displayVal.field}</div>
+          <div style={{fontSize:17,fontWeight:700,color:T.numColor}}>{total}</div>
+          <div style={{fontSize:9,color:T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DIMENSION FIELD: summary mode (single card) ───────────────────────────────
+  if (mode === "summary") {
+    const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
+    return (
+      <div>
         <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
-          {!isNumericField&&!tooManyOpts&&(
-            <button onClick={()=>setMode("breakdown")} style={{fontSize:9,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+          {!tooManyOpts && (
+            <button onClick={()=>setMode("breakdown")}
+              style={{fontSize:9,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
               Expand ▸
             </button>
           )}
-          {isNumericField&&<span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>Metric total</span>}
-          {tooManyOpts&&!isNumericField&&<span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>{opts.length} values</span>}
+          {tooManyOpts && <span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>{opts.length} values</span>}
         </div>
-        {/* Summary card — clickable to clear filter if active */}
-        <button onClick={allActive?undefined:()=>onFilter([])}
-          style={{...cardStyle(!allActive&&active.length>0),width:"100%",textAlign:"left",
-            cursor:allActive?"default":"pointer",
-            background:!allActive?T.primary:T.bgStat,
-            border:"1px solid "+(allActive?T.border:T.primary)}}>
-          {!allActive&&<div style={{fontSize:10,color:"rgba(245,239,230,0.7)",marginBottom:4,fontStyle:"italic"}}>
-            Filtered: {active.join(", ")} · click to clear
-          </div>}
-          {/* Show all value metrics in the card */}
-          {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
-            <div key={vi} style={{marginBottom:vi<(allVals||[primaryVal]).length-1?4:0}}>
-              <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.65)",marginBottom:1}}>
-                {v.agg} of {v.field}
-              </div>
-              <div style={{fontSize:vi===0?17:14,fontWeight:700,color:allActive?T.numColor:T.textLt}}>
-                {fmtNum(doAgg(data,v.field,v.agg),v.agg,v.field,numFmt)}
-              </div>
+        <button onClick={allActive ? undefined : ()=>onFilter([])}
+          style={{...(allActive?cardKpi:cardOn), cursor:allActive?"default":"pointer", width:"100%", textAlign:"left"}}>
+          {!allActive && (
+            <div style={{fontSize:9,color:"rgba(245,239,230,0.75)",marginBottom:3,fontStyle:"italic"}}>
+              {active.join(", ")} · click to clear
             </div>
-          ))}
-          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:3}}>
+          )}
+          <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.7)",marginBottom:2}}>
+            {displayVal.agg} of {displayVal.field}
+          </div>
+          <div style={{fontSize:17,fontWeight:700,color:allActive?T.numColor:T.textLt}}>{total}</div>
+          <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:2}}>
             {data.length.toLocaleString()} rows
           </div>
         </button>
@@ -578,43 +593,48 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
     );
   }
 
-  return(
+  // ── DIMENSION FIELD: breakdown mode (one card per unique value) ───────────────
+  return (
     <div>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
         <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
-        <button onClick={()=>setMode("summary")} style={{fontSize:9,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+        <button onClick={()=>setMode("summary")}
+          style={{fontSize:9,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
           ◂ Collapse
         </button>
-        {!allActive&&<button onClick={()=>onFilter([])} style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear</button>}
+        {!allActive && (
+          <button onClick={()=>onFilter([])}
+            style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+            Clear
+          </button>
+        )}
       </div>
-      <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
-        <button onClick={()=>onFilter([])} style={cardStyle(allActive)}>
-          <div style={{fontSize:10,color:allActive?T.textLt:T.textMd,marginBottom:3}}>All</div>
-          {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
-            <div key={vi} style={{marginBottom:1}}>
-              <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.65)":T.textMd}}>{v.agg} of {v.field}</div>
-              <div style={{fontSize:vi===0?14:12,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
-                {fmtNum(doAgg(data,v.field,v.agg),v.agg,v.field,numFmt)}
-              </div>
-            </div>
-          ))}
-          <div style={{fontSize:10,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+      <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4}}>
+        {/* All button */}
+        <button onClick={()=>onFilter([])} style={allActive?{...cardOn,minWidth:80}:{...cardOff,minWidth:80}}>
+          <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>All</div>
+          <div style={{fontSize:14,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
+            {fmtNum(doAgg(data,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+          </div>
+          <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
         </button>
+        {/* One card per unique value */}
         {opts.map(val=>{
-          const on=active.includes(val);
-          const rows=data.filter(r=>String(r[field]||"")===val);
-          return(
-            <button key={val} onClick={()=>on?onFilter([]):onFilter([val])} style={cardStyle(on)}>
-              <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
-              {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
-                <div key={vi} style={{marginBottom:1}}>
-                  <div style={{fontSize:9,color:on?"rgba(245,239,230,0.65)":T.textMd}}>{v.agg} of {v.field}</div>
-                  <div style={{fontSize:vi===0?14:12,fontWeight:700,color:on?T.textLt:T.numColor}}>
-                    {fmtNum(doAgg(rows,v.field,v.agg),v.agg,v.field,numFmt)}
-                  </div>
-                </div>
-              ))}
-              <div style={{fontSize:10,color:on?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{rows.length.toLocaleString()} rows</div>
+          const on = active.includes(val);
+          const subset = data.filter(r=>String(r[field]||"")===val);
+          return (
+            <button key={val} onClick={()=>on?onFilter([]):onFilter([val])}
+              style={on?{...cardOn,minWidth:80}:{...cardOff,minWidth:80}}>
+              <div style={{fontSize:9,color:on?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2,
+                maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {val||"(blank)"}
+              </div>
+              <div style={{fontSize:14,fontWeight:700,color:on?T.textLt:T.numColor}}>
+                {fmtNum(doAgg(subset,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+              </div>
+              <div style={{fontSize:9,color:on?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>
+                {subset.length.toLocaleString()} rows
+              </div>
             </button>
           );
         })}
@@ -1046,12 +1066,13 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   useEffect(()=>{if(result&&!result.error&&result.colVals)setColOrder(null);},[config]);
   const setF=(f,v)=>setFilters(p=>({...p,[f]:v}));
   const hasActive=Object.values(filters).some(v=>v&&v.length);
-  const slicerFields=(config.filters||[]).filter(f=>!(cardFields||[]).includes(f));
+  const cardFieldNames=useMemo(()=>(cardFields||[]).map(x=>typeof x==="string"?x:x.field),[cardFields]);
+  const slicerFields=(config.filters||[]).filter(f=>!cardFieldNames.includes(f));
   const primaryVal=(config.values||[])[0]||{field:"",agg:"sum"};
   // All dimension fields available for ad-hoc filtering
   const dimFields=useMemo(()=>fields.filter(f=>!numFields.has(f)),[fields,numFields]);
   // Ad-hoc fields not already in configured slicers or card fields
-  const addableFields=dimFields.filter(f=>!slicerFields.includes(f)&&!(cardFields||[]).includes(f)&&!adHocFields.includes(f));
+  const addableFields=dimFields.filter(f=>!slicerFields.includes(f)&&!cardFieldNames.includes(f)&&!adHocFields.includes(f));
   useEffect(()=>{
     if (!showAdHocPicker) return;
     const h=e=>{if(adHocRef.current&&!adHocRef.current.contains(e.target))setShowAdHocPicker(false);};
@@ -1112,23 +1133,20 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
         <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:"12px 16px",marginBottom:14,
           overflowX:"auto"}}>
           <div style={{display:"flex",gap:24,minWidth:0,alignItems:"flex-start"}}>
-            {cardFields.map(f=>{
+            {(cardFields||[]).map(cf=>{
+              const f=typeof cf==="string"?cf:cf.field;
+              const cardAgg=typeof cf==="string"?"sum":cf.agg;
               // Cross-filter: show data filtered by all OTHER active card/slicer filters
               const otherFilters=Object.fromEntries(Object.entries(filters).filter(([k])=>k!==f));
               const otherKeys=[...new Set([...config.filters,...Object.keys(otherFilters).filter(k=>otherFilters[k]&&otherFilters[k].length)])];
               const cardData=otherKeys.length?data.filter(row=>otherKeys.every(ff=>{const s=otherFilters[ff]||[];return !s.length||s.includes(String(row[ff]||""));})):data;
+              // Override primaryVal with card's own agg for numeric fields
+              const cardPrimary=numFields&&numFields.has(f)?{field:f,agg:cardAgg}:primaryVal;
               return(
-                <div key={f} style={{flexShrink:0,minWidth:160,maxWidth:340}}>
+                <div key={f} style={{flexShrink:0,minWidth:140}}>
                   <QuickFilterCards field={f} data={cardData} activeFilters={filters[f]||[]}
                     onFilter={v=>setF(f,v)} numFmt={numFmt} numFields={numFields}
-                    primaryVal={
-                      // If card field is itself a value metric, show its own aggregate
-                      // Otherwise fall back to the first value metric
-                      config.values&&config.values.find(v=>v.field===f)
-                        ? config.values.find(v=>v.field===f)
-                        : primaryVal
-                    }
-                    allVals={config.values||[]}/>
+                    primaryVal={cardPrimary} cardAgg={cardAgg}/>
                 </div>
               );
             })}
@@ -1656,7 +1674,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     if (curNum) setConfig(c=>({...c,values:c.values.filter(v=>v.field!==field)}));
   }
 
-  function toggleCard(field){setCardFields(cf=>cf.includes(field)?cf.filter(f=>f!==field):[...cf,field]);}
+  function toggleCard(field){setCardFields(cf=>cf.some(x=>x.field===field)?cf.filter(x=>x.field!==field):[...cf,{field,agg:"sum"}]);}
+  function setCardAgg(field,agg){setCardFields(cf=>cf.map(x=>x.field===field?{...x,agg}:x));}
 
   function toggleField(zone,field) {
     setConfig(c=>{
@@ -1696,7 +1715,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const fieldStatus=useMemo(()=>{
     if (!dataset||!config) return {};
     const z={};
-    dataset.fields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.includes(f)};});
+    dataset.fields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.some(x=>x.field===f)};});
     return z;
   },[dataset,config,cardFields]);
 
@@ -1781,8 +1800,13 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 onRemove={f=>removeFrom("filters",f)} onReorder={(a,b)=>reorderInZone("filters",a,b)}
                 emptyMsg="Press F on any field"/>
               <ZoneBox label="Card Filters (K) — Power BI style" color={T.tagK} zone="cards" fields={cardFields}
-                onRemove={f=>setCardFields(cf=>cf.filter(x=>x!==f))} onReorder={(a,b)=>setCardFields(cf=>{const fi=cf.indexOf(a),ti=cf.indexOf(b);if(fi===-1||ti===-1)return cf;const arr=[...cf];arr.splice(fi,1);arr.splice(ti,0,a);return arr;})}
-                emptyMsg="Press K on a dimension field"/>
+                isValues onAggChange={setCardAgg}
+                onRemove={f=>setCardFields(cf=>cf.filter(x=>x.field!==f))}
+                onReorder={(a,b)=>setCardFields(cf=>{
+                  const fi=cf.findIndex(x=>x.field===a),ti=cf.findIndex(x=>x.field===b);
+                  if(fi===-1||ti===-1)return cf;const arr=[...cf];arr.splice(fi,1);arr.splice(ti,0,cf[fi]);return arr;
+                })}
+                emptyMsg="Press K on any field"/>
             </div>
             <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
               <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Live Preview</div>
@@ -2176,7 +2200,10 @@ function parseReportMeta(r) {
     fields: r.field_count||0,
     savedAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
     config: typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{}),
-    cardFields: typeof r.card_fields==="string" ? JSON.parse(r.card_fields) : (r.card_fields||[]),
+    cardFields: (()=>{const cf=typeof r.card_fields==="string"?JSON.parse(r.card_fields):(r.card_fields||[]);
+      // Normalise: legacy data may have strings, new data has {field,agg} objects
+      return cf.map(x=>typeof x==="string"?{field:x,agg:"sum"}:x);
+    })(),
     isPublished: !!r.is_published,
     dataset: null, // rows loaded lazily on demand
   };
