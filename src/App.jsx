@@ -517,7 +517,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
 }
 
 // ── Quick filter cards ─────────────────────────────────────────────────────────
-function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields}) {
+function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields,allVals}) {
   const opts=useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
   const isNumericField=numFields&&numFields.has(field);
   const tooManyOpts=opts.length>20;
@@ -556,11 +556,23 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
             cursor:allActive?"default":"pointer",
             background:!allActive?T.primary:T.bgStat,
             border:"1px solid "+(allActive?T.border:T.primary)}}>
-          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.7)",marginBottom:3}}>
-            {allActive?primaryVal.agg+" of "+primaryVal.field:"Filtered: "+active.join(", ")+" · click to clear"}
+          {!allActive&&<div style={{fontSize:10,color:"rgba(245,239,230,0.7)",marginBottom:4,fontStyle:"italic"}}>
+            Filtered: {active.join(", ")} · click to clear
+          </div>}
+          {/* Show all value metrics in the card */}
+          {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
+            <div key={vi} style={{marginBottom:vi<(allVals||[primaryVal]).length-1?4:0}}>
+              <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.65)",marginBottom:1}}>
+                {v.agg} of {v.field}
+              </div>
+              <div style={{fontSize:vi===0?17:14,fontWeight:700,color:allActive?T.numColor:T.textLt}}>
+                {fmtNum(doAgg(data,v.field,v.agg),v.agg,v.field,numFmt)}
+              </div>
+            </div>
+          ))}
+          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:3}}>
+            {data.length.toLocaleString()} rows
           </div>
-          <div style={{fontSize:17,fontWeight:700,color:allActive?T.numColor:T.textLt}}>{totalVal}</div>
-          <div style={{fontSize:10,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:2}}>{data.length.toLocaleString()} rows</div>
         </button>
       </div>
     );
@@ -578,9 +590,14 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
       <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
         <button onClick={()=>onFilter([])} style={cardStyle(allActive)}>
           <div style={{fontSize:10,color:allActive?T.textLt:T.textMd,marginBottom:3}}>All</div>
-          <div style={{fontSize:15,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
-            {fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
-          </div>
+          {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
+            <div key={vi} style={{marginBottom:1}}>
+              <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.65)":T.textMd}}>{v.agg} of {v.field}</div>
+              <div style={{fontSize:vi===0?14:12,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
+                {fmtNum(doAgg(data,v.field,v.agg),v.agg,v.field,numFmt)}
+              </div>
+            </div>
+          ))}
           <div style={{fontSize:10,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
         </button>
         {opts.map(val=>{
@@ -589,9 +606,14 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
           return(
             <button key={val} onClick={()=>on?onFilter([]):onFilter([val])} style={cardStyle(on)}>
               <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
-              <div style={{fontSize:15,fontWeight:700,color:on?T.textLt:T.numColor}}>
-                {fmtNum(doAgg(rows,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
-              </div>
+              {(allVals&&allVals.length>0?allVals:[primaryVal]).map((v,vi)=>(
+                <div key={vi} style={{marginBottom:1}}>
+                  <div style={{fontSize:9,color:on?"rgba(245,239,230,0.65)":T.textMd}}>{v.agg} of {v.field}</div>
+                  <div style={{fontSize:vi===0?14:12,fontWeight:700,color:on?T.textLt:T.numColor}}>
+                    {fmtNum(doAgg(rows,v.field,v.agg),v.agg,v.field,numFmt)}
+                  </div>
+                </div>
+              ))}
               <div style={{fontSize:10,color:on?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{rows.length.toLocaleString()} rows</div>
             </button>
           );
@@ -651,7 +673,7 @@ function Slicer({field,active,onChange,data}) {
         <span style={{fontSize:9,opacity:0.5}}>{open?"▲":"▼"}</span>
       </button>
       {open&&(
-        <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:300,background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,minWidth:260,maxWidth:340,boxShadow:"0 8px 28px rgba(92,45,26,0.2)",overflow:"hidden"}}>
+        <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:9999,background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,minWidth:260,maxWidth:340,boxShadow:"0 8px 28px rgba(92,45,26,0.2)",overflow:"hidden"}}>
           {/* Sort row — like Excel filter */}
           <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,background:T.bgStat}}>
             <div style={{fontSize:10,color:T.textMd,fontWeight:600,marginBottom:5}}>Sort</div>
@@ -812,7 +834,24 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
     :orderedVals.map((v,_i)=>                              ({key:"__total__",vi:origIdx(v),isTotal:false}));
   const effectiveVals=hasGroups?vals:orderedVals;
   const getCell=(s,col)=>((cells[s]||{})[col.key]||effectiveVals.map(()=>0))[col.vi]||0;
-  const getGrand=col=>(col.key==="__total__"?grandTotals:(colTotals[col.key]||effectiveVals.map(()=>0)))[col.vi]||0;
+  // Grand totals from VISIBLE rows only (plain computation — no hook needed here)
+  const visibleGrandTotals=sortedRowKeys.map
+    ? effectiveVals.map((_,vi)=>sortedRowKeys.reduce((sum,rk)=>{
+        const rkStr=rk.join(" ");
+        return sum+(((cells[rkStr]||{})["__total__"]||[])[vi]||0);
+      },0))
+    : grandTotals;
+  const visibleColTotals=(()=>{
+    const out={};
+    colVals.forEach(cv=>{
+      out[cv]=effectiveVals.map((_,vi)=>sortedRowKeys.reduce((sum,rk)=>{
+        const rkStr=rk.join(" ");
+        return sum+(((cells[rkStr]||{})[cv]||[])[vi]||0);
+      },0));
+    });
+    return out;
+  })();
+  const getGrand=col=>(col.key==="__total__"?visibleGrandTotals:(visibleColTotals[col.key]||effectiveVals.map(()=>0)))[col.vi]||0;
   const lBorder=i=>i===0||flatCols[i-1].key!==flatCols[i].key?"1px solid "+T.borderDk:"none";
   const thStyle={padding:"10px 14px",fontWeight:700,fontSize:12,color:T.textLt,whiteSpace:"nowrap",background:T.bgHeader,borderBottom:"1px solid "+T.borderHd};
   // Column group drag handlers (only active when onColReorder is provided)
@@ -1081,7 +1120,15 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               return(
                 <div key={f} style={{flexShrink:0,minWidth:160,maxWidth:340}}>
                   <QuickFilterCards field={f} data={cardData} activeFilters={filters[f]||[]}
-                    onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt} numFields={numFields}/>
+                    onFilter={v=>setF(f,v)} numFmt={numFmt} numFields={numFields}
+                    primaryVal={
+                      // If card field is itself a value metric, show its own aggregate
+                      // Otherwise fall back to the first value metric
+                      config.values&&config.values.find(v=>v.field===f)
+                        ? config.values.find(v=>v.field===f)
+                        : primaryVal
+                    }
+                    allVals={config.values||[]}/>
                 </div>
               );
             })}
@@ -1091,7 +1138,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
 
       {/* Slicers — configured + ad-hoc */}
       {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0)&&(
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap",position:"relative",zIndex:200}}>
           <span style={{fontSize:12,color:T.textMd,fontWeight:600}}>Filters:</span>
           {slicerFields.map(f=><Slicer key={f} field={f} active={filters[f]||[]} onChange={v=>setF(f,v)} data={data}/>)}
           {adHocFields.map(f=>(
