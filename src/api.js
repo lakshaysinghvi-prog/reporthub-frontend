@@ -85,3 +85,11 @@ export const refreshReportUrl = (id, url, sheetName) =>
     method: 'POST',
     body: JSON.stringify({ url, sheetName })
   });
+
+// Proxy-fetch a URL via backend (bypasses browser CORS)
+// Works with OneDrive, Dropbox, Google Drive, SharePoint
+export const fetchUrlViaProxy = (url, sheetName) =>
+  api('/api/fetch-url', {
+    method: 'POST',
+    body: JSON.stringify({ url, sheetName })
+  });

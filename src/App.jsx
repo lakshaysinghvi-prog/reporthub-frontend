@@ -4,7 +4,7 @@ import _ from "lodash";
 import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePassword,
          deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
          publishReport as apiPublishReport, unpublishReport as apiUnpublishReport,
-         getReportData } from "./api.js";
+         getReportData, fetchUrlViaProxy } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -1384,15 +1384,27 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
     if (!refreshUrl.trim()){setParseError("Enter a URL first.");setPhase("error");return;}
     setPhase("parsing");setParseError("");
     try{
-      const resp=await fetch(refreshUrl.trim());
-      if (!resp.ok) throw new Error("HTTP "+resp.status);
-      const buf=await resp.arrayBuffer();
-      const wb=libs.XLSX.read(buf,{type:"array",cellDates:true});
-      setWorkbook(wb);setLastRefresh(new Date());
-      if (refreshSheet&&wb.SheetNames.includes(refreshSheet)){loadSheet(wb,refreshSheet);}
-      else if (wb.SheetNames.length===1){loadSheet(wb,wb.SheetNames[0]);}
-      else{setSheetNames(wb.SheetNames);setPhase("sheet");}
-    }catch(e){setParseError("URL fetch failed: "+e.message+". Ensure it is a direct download link with CORS enabled.");setPhase("error");}
+      // Route through Railway backend — bypasses CORS on OneDrive, Dropbox, SharePoint, GDrive
+      const result=await fetchUrlViaProxy(refreshUrl.trim(), refreshSheet||undefined);
+      setLastRefresh(new Date());
+      // result.rows is already parsed JSON from the backend
+      processRaw(result.rows, refreshUrl.trim().split("/").pop().split("?")[0]||"Imported");
+    }catch(e){
+      const msg=e.message||"Unknown error";
+      // Give specific guidance based on error type
+      let hint="";
+      if (msg.includes("401")||msg.includes("403")||msg.includes("Unauthorized")) {
+        hint=" Make sure the file is shared as 'Anyone with the link can view'.";
+      } else if (msg.includes("404")) {
+        hint=" The file was not found. Check the link is correct and the file still exists.";
+      } else if (msg.includes("Download failed")) {
+        hint="";
+      } else {
+        hint=" For OneDrive: open the file → Share → Anyone with link can view → Copy link. For Google Drive: File → Share → Anyone with link → Copy link.";
+      }
+      setParseError(msg+hint);
+      setPhase("error");
+    }
   }
 
   const onDrop=useCallback(e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);},[libs]);
@@ -1447,10 +1459,12 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
             {lastRefresh&&<span style={{fontSize:11,color:T.textMd,marginLeft:"auto"}}>Last refreshed: {lastRefresh.toLocaleTimeString()}</span>}
           </div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.6}}>
-            Paste a direct download URL (SharePoint public share, Dropbox, OneDrive, or any CORS-enabled server). Your pivot layout is preserved on refresh.
+            Paste a sharing link from <strong>OneDrive</strong>, <strong>Google Drive</strong>, <strong>Dropbox</strong>, or <strong>SharePoint</strong>.
+            The file is fetched server-side so CORS is not an issue.
+            Make sure the file is shared as <em>"Anyone with the link can view"</em>.
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)} placeholder="https://your-server.com/report.xlsx"
+            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)} placeholder="OneDrive / Google Drive / Dropbox share link"
               style={{...inp,flex:"2 1 300px"}}/>
             <input value={refreshSheet} onChange={e=>setRefreshSheet(e.target.value)} placeholder="Sheet name (optional)"
               style={{...inp,flex:"1 1 150px"}}/>
