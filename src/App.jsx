@@ -227,18 +227,44 @@ function exportExcel(result, config, numFmt) {
 }
 
 function exportPDF(config) {
-  // Open a print-friendly version in a new window
-  const style = `<style>body{font-family:Arial,sans-serif;font-size:11px}table{border-collapse:collapse;width:100%}th{background:#5C2D1A;color:#F5EFE6;padding:7px 10px;text-align:right}th:first-child{text-align:left}td{padding:6px 10px;border-bottom:1px solid #D4BEA0;text-align:right}td:first-child{text-align:left;font-weight:600}tr:nth-child(even){background:#F5EEE4}tfoot td{font-weight:700;background:#EDE0CF}</style>`;
-  // Grab the pivot table element from the page and print it
-  const tableEl = document.querySelector("table");
-  if (!tableEl) { alert("No pivot table found to export."); return; }
+  const style = `<style>
+    body{font-family:Arial,sans-serif;font-size:11px;color:#2C1810;background:#fff}
+    h2{color:#5C2D1A;margin-bottom:4px;font-size:16px}
+    p{color:#7A5C4A;font-size:10px;margin-bottom:12px}
+    table{border-collapse:collapse;width:100%}
+    th{background:#5C2D1A;color:#F5EFE6;padding:7px 10px;text-align:right;font-size:10px}
+    th:first-child{text-align:left}
+    td{padding:6px 10px;border-bottom:1px solid #D4BEA0;text-align:right;font-size:10px}
+    td:first-child{text-align:left;font-weight:600}
+    tr:nth-child(even) td{background:#F5EEE4}
+    tfoot td{font-weight:700;background:#EDE0CF;border-top:2px solid #A07850}
+    @media print{body{margin:0}}
+  </style>`;
+  // Find the pivot table — look for the main report area table, not drill-down
+  // The pivot table is inside a div with overflowX:auto that is NOT inside a fixed modal
+  let tableEl = null;
+  const allTables = document.querySelectorAll("table");
+  for (const t of allTables) {
+    // Skip tables inside fixed-position modals (drill-down, settings)
+    let el = t.parentElement;
+    let inModal = false;
+    while (el) {
+      const pos = getComputedStyle(el).position;
+      if (pos === "fixed") { inModal = true; break; }
+      el = el.parentElement;
+    }
+    if (!inModal && t.querySelector("thead th")) { tableEl = t; break; }
+  }
+  if (!tableEl) { alert("No pivot table found. Make sure a report is loaded."); return; }
   const win = window.open("","_blank","width=900,height=700");
+  if (!win) { alert("Pop-up blocked. Please allow pop-ups for this site and try again."); return; }
   win.document.write("<html><head><title>"+config.name+"</title>"+style+"</head><body>");
-  win.document.write("<h2 style='color:#5C2D1A;margin-bottom:12px'>"+config.name+"</h2>");
+  win.document.write("<h2>"+config.name+"</h2>");
+  win.document.write("<p>Exported "+new Date().toLocaleString()+"</p>");
   win.document.write(tableEl.outerHTML);
   win.document.write("</body></html>");
   win.document.close();
-  setTimeout(()=>win.print(), 400);
+  setTimeout(()=>win.print(), 600);
 }
 
 // ── Drill-down column filter (Excel-style per-column filter in drill-down) ────
@@ -1308,7 +1334,7 @@ function AppHeader({role, onLogout, children}) {
 }
 
 // ── Upload Tab ─────────────────────────────────────────────────────────────────
-function UploadTab({libs, onDataLoaded, existingConfig}) {
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -1460,8 +1486,9 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
           </div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.6}}>
             Paste a sharing link from <strong>OneDrive</strong>, <strong>Google Drive</strong>, <strong>Dropbox</strong>, or <strong>SharePoint</strong>.
-            The file is fetched server-side so CORS is not an issue.
+            The file is fetched via the server so CORS is not an issue.
             Make sure the file is shared as <em>"Anyone with the link can view"</em>.
+            {onDataRefresh&&existingConfig&&<span style={{color:T.primary,fontWeight:600}}> Refresh will keep your existing builder layout.</span>}
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)} placeholder="OneDrive / Google Drive / Dropbox share link"
@@ -1529,11 +1556,29 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
                 · Column order preserved from source file
               </div>
             </div>
-            <div style={{display:"flex",gap:10}}>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
               <button onClick={()=>{setPhase("drop");setAllRows([]);setSchema([]);}}
                 style={{padding:"8px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>Different file</button>
+              {onDataRefresh&&existingConfig&&(
+                <button onClick={()=>{
+                  // Update data only — keep existing builder config intact
+                  const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
+                  const fields=schema.map(s=>s.field);
+                  const rows=allRows.map(r=>{
+                    const out={...r};
+                    fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,₹]/g,""));out[f]=isNaN(n)?0:n;}}});
+                    return out;
+                  });
+                  onDataRefresh({rows,fields,numFields});
+                }}
+                style={{padding:"8px 20px",background:"none",border:"2px solid "+T.primary,borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600,color:T.primary}}>
+                  ↻ Update data only
+                </button>
+              )}
               <button onClick={confirmLoad}
-                style={{padding:"8px 20px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600}}>Load into builder</button>
+                style={{padding:"8px 20px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600}}>
+                {existingConfig?"Load fresh (reset builder)":"Load into builder"}
+              </button>
             </div>
           </div>
 
@@ -1628,6 +1673,12 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   },[dataset,typeOverrides]);
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setTab("builder");}
+  function onDataRefresh(ds){
+    // Update rows/fields ONLY — keep existing config, cardFields, typeOverrides, activeReportId
+    setDataset(prev=>({...prev,...ds}));
+    showToast("Data updated! Builder layout preserved.");
+    setTab("builder");
+  }
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
     if (!r) return;
@@ -1759,7 +1810,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         {TABS.map(([t,l,d])=>tabBtn(t,l,d))}
       </div>
 
-      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} existingConfig={config}/>}
+      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={dataset?onDataRefresh:null} existingConfig={config}/>}
 
       {tab==="builder"&&dataset&&config&&(
         <div style={{padding:20,display:"grid",gridTemplateColumns:"290px 1fr",gap:20,alignItems:"start"}}>
