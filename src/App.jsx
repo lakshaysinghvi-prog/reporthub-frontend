@@ -1353,6 +1353,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const libsReady=!!(libs.XLSX&&libs.Papa);
   const [showRefreshPicker,setShowRefreshPicker]=useState(false);
   const [pendingRefreshData,setPendingRefreshData]=useState(null);
+  const [selectedRefreshIds,setSelectedRefreshIds]=useState(new Set());
 
   function applySchema(rows,fields,name) {
     if (!rows.length){setParseError("No data rows found after cleaning.");setPhase("error");return;}
@@ -1578,59 +1579,88 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                   ↻ Update existing report
                 </button>
               )}
-              {/* Report picker modal */}
+              {/* Report picker modal — multi-select checkboxes */}
               {showRefreshPicker&&pendingRefreshData&&(
                 <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                  <div style={{background:T.bgCard,borderRadius:12,width:"min(520px,92vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+                  <div style={{background:T.bgCard,borderRadius:12,width:"min(560px,94vw)",maxHeight:"82vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+                    {/* Header */}
                     <div style={{padding:"16px 20px",background:T.bgHeader,borderRadius:"12px 12px 0 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div>
-                        <div style={{fontWeight:700,fontSize:15,color:T.textLt}}>Which report should be updated?</div>
+                        <div style={{fontWeight:700,fontSize:15,color:T.textLt}}>Select reports to update</div>
                         <div style={{fontSize:11,color:"rgba(245,239,230,0.65)",marginTop:2}}>
                           New data: {pendingRefreshData.rows.length.toLocaleString()} rows · {pendingRefreshData.fields.length} columns
                         </div>
                       </div>
-                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);}}
+                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);setSelectedRefreshIds(new Set());}}
                         style={{border:"none",background:"rgba(255,255,255,0.15)",color:T.textLt,borderRadius:6,width:28,height:28,cursor:"pointer",fontSize:16}}>×</button>
                     </div>
-                    <div style={{padding:"12px 16px",borderBottom:"0.5px solid "+T.border,fontSize:12,color:T.textMd,background:T.bgStat}}>
-                      The builder layout (rows, columns, values, filters) of the chosen report will be kept unchanged.
-                      Only the underlying data rows will be replaced.
-                    </div>
-                    <div style={{overflowY:"auto",padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
-                      {savedReports.map(r=>(
-                        <button key={r.id} onClick={async()=>{
-                          setShowRefreshPicker(false);
-                          await onDataRefresh(pendingRefreshData,r.id);
-                          setPendingRefreshData(null);
-                        }}
-                          style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:T.bgCard,
-                            border:"1px solid "+T.border,borderRadius:8,cursor:"pointer",textAlign:"left",
-                            width:"100%"}}
-                          onMouseEnter={e=>e.currentTarget.style.borderColor=T.primary}
-                          onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
-                          <div style={{width:36,height:36,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,
-                            display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>
-                            {r.isPublished?"📤":"📊"}
-                          </div>
-                          <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontWeight:600,fontSize:13,color:T.text}}>{r.name}</div>
-                            <div style={{fontSize:11,color:T.textMd,marginTop:2}}>
-                              {r.rows.toLocaleString()} rows · {r.fields} fields
-                              {r.isPublished&&<span style={{marginLeft:8,background:T.primary,color:T.textLt,borderRadius:8,padding:"1px 7px",fontSize:10,fontWeight:600}}>Published</span>}
-                            </div>
-                            <div style={{fontSize:10,color:T.textMd,marginTop:1}}>
-                              Rows: {r.config.rows.join(", ")||"—"} · Values: {r.config.values.map(v=>v.field).join(", ")||"—"}
-                            </div>
-                          </div>
-                          <div style={{fontSize:11,color:T.primary,fontWeight:600,flexShrink:0}}>Select ▸</div>
-                        </button>
-                      ))}
-                    </div>
-                    <div style={{padding:"10px 16px",borderTop:"0.5px solid "+T.border,textAlign:"right"}}>
-                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);}}
-                        style={{padding:"6px 16px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:13,color:T.text}}>
-                        Cancel
+                    {/* Info bar + select all */}
+                    <div style={{padding:"8px 16px",borderBottom:"0.5px solid "+T.border,fontSize:12,color:T.textMd,background:T.bgStat,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <span>Tick the reports whose data rows should be replaced. Builder layout stays unchanged.</span>
+                      <button onClick={()=>setSelectedRefreshIds(prev=>prev.size===savedReports.length?new Set():new Set(savedReports.map(r=>r.id)))}
+                        style={{fontSize:11,color:T.primary,background:"none",border:"none",cursor:"pointer",fontWeight:600,flexShrink:0,marginLeft:12}}>
+                        {selectedRefreshIds.size===savedReports.length?"Deselect all":"Select all"}
                       </button>
+                    </div>
+                    {/* Report list with checkboxes */}
+                    <div style={{overflowY:"auto",padding:"10px 14px",display:"flex",flexDirection:"column",gap:6}}>
+                      {savedReports.map(r=>{
+                        const checked=selectedRefreshIds.has(r.id);
+                        return(
+                          <label key={r.id} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 14px",
+                            background:checked?"rgba(92,45,26,0.06)":T.bgCard,
+                            border:"1px solid "+(checked?T.primary:T.border),borderRadius:8,cursor:"pointer"}}>
+                            <input type="checkbox" checked={checked}
+                              onChange={()=>setSelectedRefreshIds(prev=>{
+                                const n=new Set(prev);
+                                n.has(r.id)?n.delete(r.id):n.add(r.id);
+                                return n;
+                              })}
+                              style={{width:16,height:16,accentColor:T.primary,flexShrink:0,cursor:"pointer"}}/>
+                            <div style={{width:34,height:34,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,
+                              display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>
+                              {r.isPublished?"📤":"📊"}
+                            </div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontWeight:600,fontSize:13,color:T.text,display:"flex",alignItems:"center",gap:8}}>
+                                {r.name}
+                                {r.isPublished&&<span style={{background:T.primary,color:T.textLt,borderRadius:8,padding:"1px 7px",fontSize:10,fontWeight:600}}>Published</span>}
+                              </div>
+                              <div style={{fontSize:11,color:T.textMd,marginTop:2}}>
+                                {r.rows.toLocaleString()} rows · Rows: {r.config.rows.join(", ")||"—"} · Values: {r.config.values.map(v=>v.field).join(", ")||"—"}
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {/* Footer with action button */}
+                    <div style={{padding:"12px 16px",borderTop:"0.5px solid "+T.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                      <span style={{fontSize:12,color:T.textMd}}>
+                        {selectedRefreshIds.size===0?"No reports selected":selectedRefreshIds.size+" report"+(selectedRefreshIds.size>1?"s":"")+" selected"}
+                      </span>
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);setSelectedRefreshIds(new Set());}}
+                          style={{padding:"7px 16px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:13,color:T.text}}>
+                          Cancel
+                        </button>
+                        <button disabled={selectedRefreshIds.size===0}
+                          onClick={async()=>{
+                            setShowRefreshPicker(false);
+                            const ids=[...selectedRefreshIds];
+                            setSelectedRefreshIds(new Set());
+                            // Update all selected reports sequentially
+                            for (const id of ids) {
+                              await onDataRefresh(pendingRefreshData,id);
+                            }
+                            setPendingRefreshData(null);
+                          }}
+                          style={{padding:"7px 18px",background:selectedRefreshIds.size>0?T.primary:"rgba(92,45,26,0.3)",
+                            color:T.textLt,border:"none",borderRadius:6,cursor:selectedRefreshIds.size>0?"pointer":"not-allowed",
+                            fontSize:13,fontWeight:700,opacity:selectedRefreshIds.size>0?1:0.6}}>
+                          ↻ Update {selectedRefreshIds.size>1?selectedRefreshIds.size+" reports":"report"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
