@@ -1410,38 +1410,48 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     }catch(e){setParseError("Read error: "+e.message);setPhase("error");}
   }
 
-  async function fetchFromUrl(url, sheet) {
-    // Strategy 1: Browser fetch — uses the user's existing browser session/cookies.
-    // Works for SharePoint/OneDrive when the user is already signed in to Office 365
-    // in the same browser (no sharing needed for internal links).
+  // Detect Microsoft / SharePoint URLs
+  const isMsUrl = url => url.includes("sharepoint.com") || url.includes("onedrive.live.com") ||
+    url.includes("1drv.ms") || url.includes("office.com") || url.includes("microsoftonline.com");
+
+  // Try to parse an ArrayBuffer as an Excel file, return rows + sheetNames or null
+  function tryParseXlsx(buf, sheet) {
     try {
-      const resp = await fetch(url, { credentials: "include", redirect: "follow" });
-      if (resp.ok) {
-        const ct = resp.headers.get("content-type") || "";
-        // Only accept if it looks like a file, not an HTML login page
-        if (!ct.includes("text/html")) {
-          const buf = await resp.arrayBuffer();
-          const wb = libs.XLSX.read(buf, { type: "array", cellDates: true });
-          const wsName = sheet && wb.SheetNames.includes(sheet) ? sheet : wb.SheetNames[0];
-          const ws = wb.Sheets[wsName];
-          if (ws) {
-            if (ws["!ref"]) {
-              const r = libs.XLSX.utils.decode_range(ws["!ref"]);
-              if (r.e.r > 100000) { r.e.r = 100000; ws["!ref"] = libs.XLSX.utils.encode_range(r); }
-            }
-            const rows = libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true });
-            console.log("Browser fetch succeeded:", rows.length, "rows");
-            return { rows, sheetNames: wb.SheetNames };
-          }
-        }
+      const wb = libs.XLSX.read(buf, { type: "array", cellDates: true });
+      const wsName = sheet && wb.SheetNames.includes(sheet) ? sheet : wb.SheetNames[0];
+      const ws = wb.Sheets[wsName];
+      if (!ws) return null;
+      if (ws["!ref"]) {
+        const r = libs.XLSX.utils.decode_range(ws["!ref"]);
+        if (r.e.r > 100000) { r.e.r = 100000; ws["!ref"] = libs.XLSX.utils.encode_range(r); }
       }
-    } catch(e) {
-      console.log("Browser fetch failed (expected for public URLs):", e.message);
-    }
-    // Strategy 2: Backend proxy — Railway server fetches with OneDrive API / download=1
-    // Works for publicly shared files. No browser session needed.
-    const result = await fetchUrlViaProxy(url, sheet||undefined);
+      return { rows: libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true }), sheetNames: wb.SheetNames };
+    } catch(e) { return null; }
+  }
+
+  // Strategy A: Browser fetch with credentials (session cookies)
+  async function fetchBrowser(url, sheet) {
+    const resp = await fetch(url, { credentials: "include", redirect: "follow" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const ct = resp.headers.get("content-type") || "";
+    if (ct.includes("text/html")) throw new Error("got-html");
+    const buf = await resp.arrayBuffer();
+    const result = tryParseXlsx(buf, sheet);
+    if (!result) throw new Error("parse-failed");
     return result;
+  }
+
+  async function fetchFromUrl(url, sheet) {
+    // Strategy 1: Browser fetch with session cookies — works for org accounts already signed in
+    try {
+      const result = await fetchBrowser(url, sheet);
+      console.log("Browser fetch succeeded:", result.rows.length, "rows");
+      return result;
+    } catch(e) {
+      console.log("Browser fetch:", e.message);
+    }
+    // Strategy 2: Backend proxy (OneDrive Sharing API + download=1) — for public links
+    return await fetchUrlViaProxy(url, sheet||undefined);
   }
 
   async function handleUrl(urlOverride, sheetOverride) {
@@ -1454,16 +1464,45 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
       setLastRefresh(new Date());
       processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
     }catch(e){
-      const msg=e.message||"Unknown error";
-      let hint="";
-      if (msg.includes("401")||msg.includes("403")||msg.includes("sign-in")||msg.includes("preview page")) {
-        hint=" The file requires sign-in. Try: open the link in a browser tab while signed into your account, then use the Upload button to pick the file directly. Or share the file as 'Anyone with the link — no sign-in required'.";
-      } else if (msg.includes("404")) {
-        hint=" File not found. Check the link is correct.";
-      } else if (msg.includes("CORS")||msg.includes("Failed to fetch")) {
-        hint=" If you are signed into OneDrive/SharePoint in this browser, the file may require organisational access. Try uploading the file directly using the file picker instead.";
+      const msg = e.message||"Unknown error";
+      // If it looks like an auth/login problem AND it is a Microsoft URL → offer popup login
+      const isAuthErr = msg.includes("401")||msg.includes("403")||
+        msg.includes("sign-in")||msg.includes("preview page")||msg.includes("login")||
+        msg.includes("got-html")||msg.includes("Got a login");
+      if (isAuthErr && isMsUrl(url)) {
+        // Offer the popup login flow instead of a static error
+        setPhase("login-required");
+        setParseError(url);  // store URL in parseError for use by popup handler
+        return;
       }
-      setParseError(msg+(hint?" "+hint:""));
+      setParseError(msg + (msg.includes("404") ? " — check the link is correct." : ""));
+      setPhase("error");
+    }
+  }
+
+  // Popup login: open the OneDrive/SharePoint URL in a popup so the user can sign in,
+  // then retry the browser fetch after the popup closes
+  async function handlePopupLogin() {
+    const url = parseError; // URL stored here when phase === "login-required"
+    const sheet = refreshSheet;
+    const popup = window.open(url, "ms_login", "width=900,height=650,left=200,top=100");
+    if (!popup) { setParseError("Pop-up was blocked. Please allow pop-ups for this site and try again."); setPhase("error"); return; }
+    setPhase("popup-waiting");
+    // Poll until popup closes
+    await new Promise(resolve => {
+      const t = setInterval(() => { if (popup.closed) { clearInterval(t); resolve(); } }, 500);
+    });
+    // Popup closed — retry browser fetch (user should now have session cookies)
+    setPhase("parsing");
+    setParseError("");
+    try {
+      const result = await fetchBrowser(url, sheet);
+      setLastRefresh(new Date());
+      processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
+    } catch(e) {
+      setParseError("Still could not access the file after sign-in. " +
+        "If the file requires organisational permissions that ReportHub does not have, " +
+        "please download it and use the file upload button instead.");
       setPhase("error");
     }
   }
@@ -1599,6 +1638,56 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
             Large files may take 5-15 seconds
           </div>
           <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
+        </div>
+      )}
+
+      {/* ── Sign-in required — popup login flow ──────────────────────────── */}
+      {phase==="login-required"&&(
+        <div style={{marginTop:14,background:T.bgCard,borderRadius:10,border:"1px solid "+T.accent,overflow:"hidden"}}>
+          <div style={{padding:"14px 18px",background:"rgba(200,146,42,0.1)",borderBottom:"0.5px solid "+T.accent,display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>🔐</span>
+            <div>
+              <div style={{fontWeight:700,fontSize:13,color:T.text}}>Sign-in required to access this file</div>
+              <div style={{fontSize:11,color:T.textMd,marginTop:2}}>The file is on OneDrive or SharePoint and requires your organisational account.</div>
+            </div>
+          </div>
+          <div style={{padding:"16px 18px"}}>
+            <div style={{fontSize:12,color:T.textMd,marginBottom:14,lineHeight:1.65}}>
+              Click the button below. A <strong>Microsoft sign-in window</strong> will open in a popup.
+              Sign into your account there, then close that window — ReportHub will automatically
+              retry downloading the file using your session.
+            </div>
+            <div style={{background:T.bgStat,borderRadius:8,padding:"10px 14px",fontSize:11,color:T.textMd,marginBottom:14,border:"0.5px solid "+T.border}}>
+              <strong>URL:</strong> <span style={{wordBreak:"break-all",fontSize:10}}>{parseError}</span>
+            </div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              <button onClick={handlePopupLogin}
+                style={{padding:"9px 22px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,
+                  cursor:"pointer",fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+                <span>🪟</span> Open sign-in window
+              </button>
+              <button onClick={()=>{setPhase("drop");setParseError("");}}
+                style={{padding:"9px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>
+                Cancel
+              </button>
+            </div>
+            <div style={{fontSize:11,color:T.textMd,marginTop:12,lineHeight:1.5}}>
+              <strong>Tip:</strong> After signing in once, future refreshes will work automatically
+              as long as you remain signed in.
+              If the popup is blocked by your browser, click the address bar icon to allow pop-ups for this site.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {phase==="popup-waiting"&&(
+        <div style={{textAlign:"center",padding:"60px 24px"}}>
+          <div style={{fontSize:40,marginBottom:14}}>🪟</div>
+          <div style={{fontWeight:700,fontSize:15,marginBottom:8,color:T.text}}>Waiting for sign-in...</div>
+          <div style={{fontSize:13,color:T.textMd,lineHeight:1.6}}>
+            Please complete sign-in in the popup window.<br/>
+            Once you close it, the file will be downloaded automatically.
+          </div>
         </div>
       )}
 
