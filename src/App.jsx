@@ -1334,7 +1334,7 @@ function AppHeader({role, onLogout, children}) {
 }
 
 // ── Upload Tab ─────────────────────────────────────────────────────────────────
-function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig}) {
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -1351,6 +1351,8 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig}) {
   const [lastRefresh,setLastRefresh]=useState(null);
   const fileRef=useRef(null);
   const libsReady=!!(libs.XLSX&&libs.Papa);
+  const [showRefreshPicker,setShowRefreshPicker]=useState(false);
+  const [pendingRefreshData,setPendingRefreshData]=useState(null);
 
   function applySchema(rows,fields,name) {
     if (!rows.length){setParseError("No data rows found after cleaning.");setPhase("error");return;}
@@ -1559,9 +1561,9 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig}) {
             <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
               <button onClick={()=>{setPhase("drop");setAllRows([]);setSchema([]);}}
                 style={{padding:"8px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>Different file</button>
-              {onDataRefresh&&existingConfig&&(
+              {onDataRefresh&&savedReports&&savedReports.length>0&&(
                 <button onClick={()=>{
-                  // Update data only — keep existing builder config intact
+                  // Build the data payload, then show report picker
                   const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
                   const fields=schema.map(s=>s.field);
                   const rows=allRows.map(r=>{
@@ -1569,11 +1571,69 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig}) {
                     fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,₹]/g,""));out[f]=isNaN(n)?0:n;}}});
                     return out;
                   });
-                  onDataRefresh({rows,fields,numFields});
+                  setPendingRefreshData({rows,fields,numFields});
+                  setShowRefreshPicker(true);
                 }}
                 style={{padding:"8px 20px",background:"none",border:"2px solid "+T.primary,borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600,color:T.primary}}>
-                  ↻ Update data only
+                  ↻ Update existing report
                 </button>
+              )}
+              {/* Report picker modal */}
+              {showRefreshPicker&&pendingRefreshData&&(
+                <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <div style={{background:T.bgCard,borderRadius:12,width:"min(520px,92vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+                    <div style={{padding:"16px 20px",background:T.bgHeader,borderRadius:"12px 12px 0 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:15,color:T.textLt}}>Which report should be updated?</div>
+                        <div style={{fontSize:11,color:"rgba(245,239,230,0.65)",marginTop:2}}>
+                          New data: {pendingRefreshData.rows.length.toLocaleString()} rows · {pendingRefreshData.fields.length} columns
+                        </div>
+                      </div>
+                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);}}
+                        style={{border:"none",background:"rgba(255,255,255,0.15)",color:T.textLt,borderRadius:6,width:28,height:28,cursor:"pointer",fontSize:16}}>×</button>
+                    </div>
+                    <div style={{padding:"12px 16px",borderBottom:"0.5px solid "+T.border,fontSize:12,color:T.textMd,background:T.bgStat}}>
+                      The builder layout (rows, columns, values, filters) of the chosen report will be kept unchanged.
+                      Only the underlying data rows will be replaced.
+                    </div>
+                    <div style={{overflowY:"auto",padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
+                      {savedReports.map(r=>(
+                        <button key={r.id} onClick={async()=>{
+                          setShowRefreshPicker(false);
+                          await onDataRefresh(pendingRefreshData,r.id);
+                          setPendingRefreshData(null);
+                        }}
+                          style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:T.bgCard,
+                            border:"1px solid "+T.border,borderRadius:8,cursor:"pointer",textAlign:"left",
+                            width:"100%"}}
+                          onMouseEnter={e=>e.currentTarget.style.borderColor=T.primary}
+                          onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                          <div style={{width:36,height:36,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,
+                            display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>
+                            {r.isPublished?"📤":"📊"}
+                          </div>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontWeight:600,fontSize:13,color:T.text}}>{r.name}</div>
+                            <div style={{fontSize:11,color:T.textMd,marginTop:2}}>
+                              {r.rows.toLocaleString()} rows · {r.fields} fields
+                              {r.isPublished&&<span style={{marginLeft:8,background:T.primary,color:T.textLt,borderRadius:8,padding:"1px 7px",fontSize:10,fontWeight:600}}>Published</span>}
+                            </div>
+                            <div style={{fontSize:10,color:T.textMd,marginTop:1}}>
+                              Rows: {r.config.rows.join(", ")||"—"} · Values: {r.config.values.map(v=>v.field).join(", ")||"—"}
+                            </div>
+                          </div>
+                          <div style={{fontSize:11,color:T.primary,fontWeight:600,flexShrink:0}}>Select ▸</div>
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{padding:"10px 16px",borderTop:"0.5px solid "+T.border,textAlign:"right"}}>
+                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);}}
+                        style={{padding:"6px 16px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:13,color:T.text}}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
               <button onClick={confirmLoad}
                 style={{padding:"8px 20px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600}}>
@@ -1673,11 +1733,32 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   },[dataset,typeOverrides]);
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setTab("builder");}
-  function onDataRefresh(ds){
-    // Update rows/fields ONLY — keep existing config, cardFields, typeOverrides, activeReportId
-    setDataset(prev=>({...prev,...ds}));
-    showToast("Data updated! Builder layout preserved.");
-    setTab("builder");
+  async function onDataRefresh(ds, targetId) {
+    // targetId = which saved report to update data for
+    const r = savedReports.find(x=>x.id===targetId);
+    if (!r) { showToast("Report not found."); return; }
+    setApiLoading(true);
+    try {
+      // Delete old rows and save new ones — reuse report's existing config
+      await onDeleteReport(targetId);
+      const nfArr = [...(ds.numFields instanceof Set ? ds.numFields : new Set(ds.numFields||[]))];
+      const id = await onSaveReport({
+        name: r.name,
+        dataset: {...ds, numFields: ds.numFields},
+        config: r.config,
+        cardFields: r.cardFields||[],
+      });
+      // If this report was the one open in builder, update local state too
+      if (activeReportId === targetId || !activeReportId) {
+        setDataset(prev=>({...prev,...ds}));
+        setConfig(r.config);
+        setCardFields(r.cardFields||[]);
+        setActiveReportId(id);
+      }
+      showToast("""+r.name+"" data updated! Builder layout preserved.");
+      setTab("builder");
+    } catch(e) { showToast("Update failed: "+e.message); }
+    finally { setApiLoading(false); }
   }
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
@@ -1810,7 +1891,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         {TABS.map(([t,l,d])=>tabBtn(t,l,d))}
       </div>
 
-      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={dataset?onDataRefresh:null} existingConfig={config}/>}
+      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null} existingConfig={config} savedReports={savedReports}/>}
 
       {tab==="builder"&&dataset&&config&&(
         <div style={{padding:20,display:"grid",gridTemplateColumns:"290px 1fr",gap:20,alignItems:"start"}}>
