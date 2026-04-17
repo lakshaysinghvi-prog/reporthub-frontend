@@ -1755,7 +1755,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         setCardFields(r.cardFields||[]);
         setActiveReportId(id);
       }
-      showToast("""+r.name+"" data updated! Builder layout preserved.");
+      showToast("'"+r.name+"' data updated! Builder layout preserved.");
       setTab("builder");
     } catch(e) { showToast("Update failed: "+e.message); }
     finally { setApiLoading(false); }
