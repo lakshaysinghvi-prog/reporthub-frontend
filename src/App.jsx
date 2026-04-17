@@ -1334,7 +1334,7 @@ function AppHeader({role, onLogout, children}) {
 }
 
 // ── Upload Tab ─────────────────────────────────────────────────────────────────
-function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports}) {
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -1354,6 +1354,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const [showRefreshPicker,setShowRefreshPicker]=useState(false);
   const [pendingRefreshData,setPendingRefreshData]=useState(null);
   const [selectedRefreshIds,setSelectedRefreshIds]=useState(new Set());
+  const [pendingLinkSave,setPendingLinkSave]=useState(null); // {url,sheet} to save after Load
 
   function applySchema(rows,fields,name) {
     if (!rows.length){setParseError("No data rows found after cleaning.");setPhase("error");return;}
@@ -1409,29 +1410,60 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     }catch(e){setParseError("Read error: "+e.message);setPhase("error");}
   }
 
-  async function handleUrl() {
-    if (!refreshUrl.trim()){setParseError("Enter a URL first.");setPhase("error");return;}
+  async function fetchFromUrl(url, sheet) {
+    // Strategy 1: Browser fetch — uses the user's existing browser session/cookies.
+    // Works for SharePoint/OneDrive when the user is already signed in to Office 365
+    // in the same browser (no sharing needed for internal links).
+    try {
+      const resp = await fetch(url, { credentials: "include", redirect: "follow" });
+      if (resp.ok) {
+        const ct = resp.headers.get("content-type") || "";
+        // Only accept if it looks like a file, not an HTML login page
+        if (!ct.includes("text/html")) {
+          const buf = await resp.arrayBuffer();
+          const wb = libs.XLSX.read(buf, { type: "array", cellDates: true });
+          const wsName = sheet && wb.SheetNames.includes(sheet) ? sheet : wb.SheetNames[0];
+          const ws = wb.Sheets[wsName];
+          if (ws) {
+            if (ws["!ref"]) {
+              const r = libs.XLSX.utils.decode_range(ws["!ref"]);
+              if (r.e.r > 100000) { r.e.r = 100000; ws["!ref"] = libs.XLSX.utils.encode_range(r); }
+            }
+            const rows = libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true });
+            console.log("Browser fetch succeeded:", rows.length, "rows");
+            return { rows, sheetNames: wb.SheetNames };
+          }
+        }
+      }
+    } catch(e) {
+      console.log("Browser fetch failed (expected for public URLs):", e.message);
+    }
+    // Strategy 2: Backend proxy — Railway server fetches with OneDrive API / download=1
+    // Works for publicly shared files. No browser session needed.
+    const result = await fetchUrlViaProxy(url, sheet||undefined);
+    return result;
+  }
+
+  async function handleUrl(urlOverride, sheetOverride) {
+    const url = (urlOverride||refreshUrl).trim();
+    const sheet = sheetOverride||refreshSheet;
+    if (!url){setParseError("Enter a URL first.");setPhase("error");return;}
     setPhase("parsing");setParseError("");
     try{
-      // Route through Railway backend — bypasses CORS on OneDrive, Dropbox, SharePoint, GDrive
-      const result=await fetchUrlViaProxy(refreshUrl.trim(), refreshSheet||undefined);
+      const result = await fetchFromUrl(url, sheet);
       setLastRefresh(new Date());
-      // result.rows is already parsed JSON from the backend
-      processRaw(result.rows, refreshUrl.trim().split("/").pop().split("?")[0]||"Imported");
+      processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
     }catch(e){
       const msg=e.message||"Unknown error";
-      // Give specific guidance based on error type
       let hint="";
-      if (msg.includes("401")||msg.includes("403")||msg.includes("Unauthorized")) {
-        hint=" Make sure the file is shared as 'Anyone with the link can view'.";
+      if (msg.includes("401")||msg.includes("403")||msg.includes("sign-in")||msg.includes("preview page")) {
+        hint=" The file requires sign-in. Try: open the link in a browser tab while signed into your account, then use the Upload button to pick the file directly. Or share the file as 'Anyone with the link — no sign-in required'.";
       } else if (msg.includes("404")) {
-        hint=" The file was not found. Check the link is correct and the file still exists.";
-      } else if (msg.includes("Download failed")) {
-        hint="";
-      } else {
-        hint=" For OneDrive: open the file → Share → Anyone with link can view → Copy link. For Google Drive: File → Share → Anyone with link → Copy link.";
+        hint=" File not found. Check the link is correct.";
+      } else if (msg.includes("CORS")||msg.includes("Failed to fetch")) {
+        hint=" If you are signed into OneDrive/SharePoint in this browser, the file may require organisational access. Try uploading the file directly using the file picker instead.";
       }
-      setParseError(msg+hint);
+      setParseError(msg+(hint?" "+hint:""));
       setPhase("error");
     }
   }
@@ -1444,13 +1476,18 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
     const fields=schema.map(s=>s.field); // preserve original chronological order
     const name=parseStats&&parseStats.name?parseStats.name:"Report";
-    const config=existingConfig?{...existingConfig,name}:autoConfig(fields,numFields,name);
+    let baseConfig=existingConfig?{...existingConfig,name}:autoConfig(fields,numFields,name);
+    if (refreshUrl.trim()) {
+      const newLink={url:refreshUrl.trim(),sheet:refreshSheet||"",label:name,lastRefreshed:Date.now()};
+      const existing=baseConfig.sourceLinks||[];
+      baseConfig={...baseConfig,sourceLinks:[...existing.filter(x=>x.url!==newLink.url),newLink]};
+    }
     const rows=allRows.map(r=>{
       const out={...r};
-      fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,\u20B9]/g,""));out[f]=isNaN(n)?0:n;}}});
+      fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,₹]/g,""));out[f]=isNaN(n)?0:n;}}});
       return out;
     });
-    onDataLoaded({rows,fields,numFields,config});
+    onDataLoaded({rows,fields,numFields,config:baseConfig});
   }
 
   const fmtSize=b=>b>1048576?(b/1048576).toFixed(1)+" MB":(b/1024).toFixed(1)+" KB";
@@ -1481,27 +1518,62 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
           </div>
         )}
 
-        <div style={{marginTop:18,padding:"16px 18px",background:T.bgCard,borderRadius:10,border:"1px solid "+T.border}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{fontSize:16}}>🔗</span>
-            <span style={{fontWeight:700,fontSize:13,color:T.text}}>Auto-refresh from URL</span>
-            {lastRefresh&&<span style={{fontSize:11,color:T.textMd,marginLeft:"auto"}}>Last refreshed: {lastRefresh.toLocaleTimeString()}</span>}
+        {/* ── Saved links — one-click refresh ──────────────────────────── */}
+        {savedLinks&&savedLinks.length>0&&(
+          <div style={{marginTop:18,background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden"}}>
+            <div style={{padding:"10px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border,display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>⚡</span>
+              <span style={{fontWeight:700,fontSize:13,color:T.primary}}>Saved links — quick refresh</span>
+              <span style={{fontSize:11,color:T.textMd}}>One click to pull latest data</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:0}}>
+              {savedLinks.map((lk,idx)=>(
+                <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:idx<savedLinks.length-1?"0.5px solid "+T.border:"none",background:idx%2===0?T.bgCard:T.bgStat}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:12,color:T.text,marginBottom:2}}>{lk.label}</div>
+                    <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
+                    {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
+                    {lk.lastRefreshed&&<div style={{fontSize:10,color:T.success}}>Last: {new Date(lk.lastRefreshed).toLocaleString()}</div>}
+                  </div>
+                  <button onClick={()=>onQuickRefresh&&onQuickRefresh(lk)}
+                    style={{padding:"5px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,flexShrink:0,whiteSpace:"nowrap"}}>
+                    ↻ Refresh
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.6}}>
-            Paste a sharing link from <strong>OneDrive</strong>, <strong>Google Drive</strong>, <strong>Dropbox</strong>, or <strong>SharePoint</strong>.
-            The file is fetched via the server so CORS is not an issue.
-            Make sure the file is shared as <em>"Anyone with the link can view"</em>.
-            {onDataRefresh&&existingConfig&&<span style={{color:T.primary,fontWeight:600}}> Refresh will keep your existing builder layout.</span>}
+        )}
+
+        {/* ── New URL / add link ─────────────────────────────────────────── */}
+        <div style={{marginTop:14,padding:"16px 18px",background:T.bgCard,borderRadius:10,border:"1px solid "+T.border}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <span style={{fontSize:14}}>🔗</span>
+            <span style={{fontWeight:700,fontSize:13,color:T.text}}>{savedLinks&&savedLinks.length>0?"Add another URL":"Load from URL"}</span>
+            {lastRefresh&&<span style={{fontSize:11,color:T.textMd,marginLeft:"auto"}}>Last: {lastRefresh.toLocaleTimeString()}</span>}
+          </div>
+          <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.55}}>
+            Paste a link from <strong>OneDrive</strong>, <strong>SharePoint</strong>, <strong>Google Drive</strong>, or <strong>Dropbox</strong>.
+            The app first tries your browser session (works if you are signed into OneDrive in this browser),
+            then falls back to a server-side download for publicly shared files.
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)} placeholder="OneDrive / Google Drive / Dropbox share link"
+            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)}
+              placeholder="Paste share link here..."
               style={{...inp,flex:"2 1 300px"}}/>
-            <input value={refreshSheet} onChange={e=>setRefreshSheet(e.target.value)} placeholder="Sheet name (optional)"
-              style={{...inp,flex:"1 1 150px"}}/>
-            <button onClick={handleUrl} disabled={!refreshUrl.trim()||!libsReady}
-              style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:refreshUrl.trim()&&libsReady?"pointer":"not-allowed",fontSize:13,fontWeight:600,opacity:refreshUrl.trim()&&libsReady?1:0.5,whiteSpace:"nowrap"}}>
-              Refresh Now
+            <input value={refreshSheet} onChange={e=>setRefreshSheet(e.target.value)}
+              placeholder="Sheet name (optional)"
+              style={{...inp,flex:"1 1 140px"}}/>
+            <button onClick={()=>handleUrl()} disabled={!refreshUrl.trim()||!libsReady}
+              style={{padding:"8px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,
+                cursor:refreshUrl.trim()&&libsReady?"pointer":"not-allowed",fontSize:13,fontWeight:600,
+                opacity:refreshUrl.trim()&&libsReady?1:0.5,whiteSpace:"nowrap"}}>
+              Load
             </button>
+          </div>
+          <div style={{fontSize:11,color:T.textMd,marginTop:8,lineHeight:1.5}}>
+            <strong>Internal OneDrive/SharePoint (org account):</strong> Open the file in a browser tab while signed in, then use the file upload button above instead —
+            the app will pick it up locally without sign-in issues.
           </div>
         </div>
 
@@ -1921,7 +1993,33 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         {TABS.map(([t,l,d])=>tabBtn(t,l,d))}
       </div>
 
-      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null} existingConfig={config} savedReports={savedReports}/>}
+      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
+        existingConfig={config} savedReports={savedReports}
+        savedLinks={savedReports.flatMap(r=>(r.config&&r.config.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
+        onQuickRefresh={async(lk)=>{
+          // Quick refresh: fetch data + update the linked report directly
+          setApiLoading(true);
+          try{
+            // Try browser first then backend proxy
+            let result;
+            try{
+              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
+              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true});result={rows,sheetNames:wb.SheetNames};}}}
+            }catch(e){console.log("browser fetch failed:",e.message);}
+            if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined);}
+            // Build numFields from the target report's config
+            const r=savedReports.find(x=>x.id===lk.reportId);
+            const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(Object.keys(result.rows[0]||{}).filter(k=>!isNaN(parseFloat(result.rows[0][k])))))]:[...Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")];
+            await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
+            // Update lastRefreshed in config
+            if(r){
+              const newLinks=(r.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:Date.now()}:x);
+              setConfig(cfg=>({...cfg,sourceLinks:newLinks}));
+            }
+            showToast("Refreshed: "+lk.label);
+          }catch(e){showToast("Refresh failed: "+e.message);}
+          finally{setApiLoading(false);}
+        }}/>}
 
       {tab==="builder"&&dataset&&config&&(
         <div style={{padding:20,display:"grid",gridTemplateColumns:"290px 1fr",gap:20,alignItems:"start"}}>
