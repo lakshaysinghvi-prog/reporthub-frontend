@@ -2390,11 +2390,42 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 // ── User view ──────────────────────────────────────────────────────────────────
 function UserView({onLogout,savedReports,onLoadReportData}) {
   const [activeId,setActiveId]=useState(null);
-  const [loadedData,setLoadedData]=useState({}); // {reportId -> {rows,fields,numFields}}
   const [dataLoading,setDataLoading]=useState(false);
-  const [refreshing,setRefreshing]=useState(false);
+  const [refreshing,setRefreshing]=useState(false); // background refresh (doesn't blank report)
   const [lastRefreshed,setLastRefreshed]=useState(null);
   const [refreshError,setRefreshError]=useState("");
+  const autoRefreshRef=useRef(null);
+
+  // ── localStorage cache helpers ──────────────────────────────────────────────
+  function cacheKey(id){return "rh_data_"+id;}
+  function saveCache(id,data){
+    try{localStorage.setItem(cacheKey(id),JSON.stringify({
+      rows:data.rows,fields:data.fields,
+      numFields:[...(data.numFields instanceof Set?data.numFields:new Set(data.numFields||[]))],
+      ts:Date.now()
+    }));}catch(e){/* quota exceeded — ignore */}
+  }
+  function loadCache(id){
+    try{
+      const raw=localStorage.getItem(cacheKey(id));
+      if(!raw)return null;
+      const d=JSON.parse(raw);
+      return {...d,numFields:new Set(d.numFields||[])};
+    }catch(e){return null;}
+  }
+
+  // Initialise loadedData from localStorage cache for instant display
+  const [loadedData,setLoadedData]=useState(()=>{
+    const init={};
+    try{
+      Object.keys(localStorage).filter(k=>k.startsWith("rh_data_")).forEach(k=>{
+        const id=k.replace("rh_data_","");
+        const d=loadCache(id);
+        if(d)init[id]=d;
+      });
+    }catch(e){}
+    return init;
+  });
 
   const publishedReports=useMemo(()=>savedReports.filter(r=>r.isPublished),[savedReports]);
   const currentMeta=useMemo(()=>{
@@ -2402,43 +2433,68 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
     return publishedReports[0]||null;
   },[activeId,savedReports,publishedReports]);
 
-  // Load data whenever the selected report changes
+  // Load data when report changes — show cache instantly, fetch DB in background
   useEffect(()=>{
     if (!currentMeta) return;
     const id=currentMeta.id;
-    if (loadedData[id]) return; // already loaded
-    setDataLoading(true);
-    onLoadReportData(id)
-      .then(data=>setLoadedData(p=>({...p,[id]:data})))
-      .catch(e=>console.error("Load error",e))
-      .finally(()=>setDataLoading(false));
-  },[currentMeta]);
+    const cached=loadedData[id];
+    if (!cached){
+      // No cache — show spinner, load from DB
+      setDataLoading(true);
+      onLoadReportData(id)
+        .then(data=>{
+          setLoadedData(p=>({...p,[id]:data}));
+          saveCache(id,data);
+        })
+        .catch(e=>console.error("Load error",e))
+        .finally(()=>setDataLoading(false));
+    } else {
+      // Cache hit — display immediately, silently refresh from DB in background
+      setDataLoading(false);
+      onLoadReportData(id)
+        .then(data=>{
+          setLoadedData(p=>({...p,[id]:data}));
+          saveCache(id,data);
+        })
+        .catch(()=>{/* silent background refresh failed — keep showing cache */});
+    }
+  },[currentMeta?.id]);
 
-  // Refresh from source URL (Google Drive / OneDrive) if configured
-  async function refreshFromSource() {
+  // Refresh from source URL — old data stays visible, spinner overlay only
+  async function refreshFromSource(silent=false) {
     if (!currentMeta) return;
     const links = currentMeta.config&&currentMeta.config.sourceLinks||[];
     if (!links.length) return;
-    setRefreshing(true); setRefreshError("");
+    if (!silent) setRefreshing(true);
+    setRefreshError("");
     try {
-      const lk = links[0]; // primary source link
-      // Use fetchUrlViaProxy which correctly routes to the Railway backend URL
+      const lk = links[0];
       const result = await fetchUrlViaProxy(lk.url, lk.sheet||undefined);
-      // Preserve existing field order and numFields from cached data
       const existingFields = currentData ? currentData.fields : Object.keys(result.rows[0]||{});
       const existingNumFields = currentData ? currentData.numFields : new Set();
-      setLoadedData(p=>({...p,[currentMeta.id]:{
-        rows: result.rows,
-        fields: existingFields,
-        numFields: existingNumFields,
-      }}));
+      const newData = {rows:result.rows, fields:existingFields, numFields:existingNumFields};
+      setLoadedData(p=>({...p,[currentMeta.id]:newData}));
+      saveCache(currentMeta.id, newData); // persist so next page load is instant
       setLastRefreshed(new Date());
     } catch(e) {
-      setRefreshError(e.message);
+      if (!silent) setRefreshError(e.message);
     } finally {
       setRefreshing(false);
     }
   }
+
+  // ── Auto-refresh every N minutes when report has a source link ──────────────
+  const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
+  useEffect(()=>{
+    if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    const links = currentMeta&&currentMeta.config&&currentMeta.config.sourceLinks||[];
+    if (links.length===0) return;
+    // Immediately do a silent refresh when report is selected (picks up latest without user action)
+    const t = setTimeout(()=>refreshFromSource(true), 1500);
+    // Then auto-refresh every 5 minutes
+    autoRefreshRef.current = setInterval(()=>refreshFromSource(true), AUTO_REFRESH_MS);
+    return()=>{clearTimeout(t); if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);};
+  },[currentMeta?.id]);
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
 
@@ -2489,14 +2545,16 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
                 {lastRefreshed&&<span style={{marginLeft:8,color:T.success}}>· Refreshed {lastRefreshed.toLocaleTimeString()}</span>}
               </div>
               {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
-                <button onClick={refreshFromSource} disabled={refreshing}
+                <button onClick={()=>refreshFromSource(false)} disabled={refreshing}
+                  title="Pull latest data from Google Drive / OneDrive"
                   style={{display:"flex",alignItems:"center",gap:6,padding:"6px 14px",
-                    background:refreshing?"rgba(92,45,26,0.1)":T.primary,
-                    color:refreshing?T.textMd:T.textLt,border:"1px solid "+T.primary,
-                    borderRadius:7,cursor:refreshing?"not-allowed":"pointer",
-                    fontSize:12,fontWeight:600,transition:"all 0.15s"}}>
-                  <span style={{display:"inline-block",animation:refreshing?"spin 1s linear infinite":"none"}}>↻</span>
-                  {refreshing?"Refreshing...":"Refresh data"}
+                    background:refreshing?"rgba(92,45,26,0.08)":T.primary,
+                    color:refreshing?T.primary:T.textLt,
+                    border:"1px solid "+T.primary,borderRadius:7,
+                    cursor:refreshing?"not-allowed":"pointer",
+                    fontSize:12,fontWeight:600,transition:"all 0.2s"}}>
+                  <span style={{display:"inline-block",animation:refreshing?"spin 0.8s linear infinite":"none",fontSize:14}}>↻</span>
+                  {refreshing?"Updating...":"Refresh"}
                 </button>
               )}
             </div>
