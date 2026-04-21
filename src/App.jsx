@@ -2421,26 +2421,16 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
     if (!links.length) return;
     setRefreshing(true); setRefreshError("");
     try {
-      // Fetch fresh data via backend (uses OAuth token)
-      const lk = links[0]; // primary link
-      const resp = await fetch(
-        (window.BACKEND_URL||"")+"/api/fetch-url",
-        { method:"POST",
-          headers:{"Content-Type":"application/json",
-            "Authorization":"Bearer "+(localStorage.getItem("rh_token")||"")},
-          body:JSON.stringify({url:lk.url, sheetName:lk.sheet||undefined}) }
-      );
-      if (!resp.ok) {
-        const err=await resp.json().catch(()=>({}));
-        throw new Error(err.message||err.error||"Refresh failed: HTTP "+resp.status);
-      }
-      const result = await resp.json();
-      // Update the loaded data cache for this report
-      const currentFields = currentData ? currentData.fields : result.rows.length?Object.keys(result.rows[0]):[];
+      const lk = links[0]; // primary source link
+      // Use fetchUrlViaProxy which correctly routes to the Railway backend URL
+      const result = await fetchUrlViaProxy(lk.url, lk.sheet||undefined);
+      // Preserve existing field order and numFields from cached data
+      const existingFields = currentData ? currentData.fields : Object.keys(result.rows[0]||{});
+      const existingNumFields = currentData ? currentData.numFields : new Set();
       setLoadedData(p=>({...p,[currentMeta.id]:{
-        rows:result.rows,
-        fields:currentFields,
-        numFields:currentData?currentData.numFields:new Set()
+        rows: result.rows,
+        fields: existingFields,
+        numFields: existingNumFields,
       }}));
       setLastRefreshed(new Date());
     } catch(e) {
