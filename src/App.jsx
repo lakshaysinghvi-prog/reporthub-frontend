@@ -4,7 +4,8 @@ import _ from "lodash";
 import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePassword,
          deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
          publishReport as apiPublishReport, unpublishReport as apiUnpublishReport,
-         getReportData, fetchUrlViaProxy } from "./api.js";
+         getReportData, fetchUrlViaProxy,
+         getOAuthStatus, startMicrosoftAuth, startGoogleAuth, disconnectOAuth } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -1334,6 +1335,96 @@ function AppHeader({role, onLogout, children}) {
 }
 
 // ── Upload Tab ─────────────────────────────────────────────────────────────────
+// ── OAuth Connection Panel ──────────────────────────────────────────────────────
+function OAuthPanel() {
+  const [status,setStatus]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState("");
+
+  useEffect(()=>{
+    getOAuthStatus().then(setStatus).catch(()=>{});
+  },[]);
+
+  async function connect(provider) {
+    setLoading(true); setMsg("");
+    try {
+      const {url}=await(provider==="microsoft"?startMicrosoftAuth():startGoogleAuth());
+      const popup=window.open(url,"oauth_"+provider,"width=600,height=700,left=200,top=80");
+      if (!popup){setMsg("Pop-up blocked — allow pop-ups for this site, then try again.");setLoading(false);return;}
+      const done=await new Promise(resolve=>{
+        const h=e=>{if(e.data&&(e.data.type==="oauth-success"||e.data.type==="oauth-error")){window.removeEventListener("message",h);resolve(e.data);}};
+        window.addEventListener("message",h);
+        const t=setInterval(()=>{if(popup.closed){clearInterval(t);window.removeEventListener("message",h);resolve({type:"closed"});}},500);
+      });
+      const s=await getOAuthStatus();
+      setStatus(s);
+      if(done.type==="oauth-success"||s[provider]?.connected)setMsg("✅ "+(provider==="microsoft"?"Microsoft":"Google")+" account connected!");
+      else if(done.type==="oauth-error")setMsg("❌ Failed: "+done.error);
+      else setMsg("Window closed — try again if connection didn't complete.");
+    }catch(e){setMsg("Error: "+e.message);}
+    finally{setLoading(false);}
+  }
+
+  async function disconnect(provider){
+    if(!confirm("Disconnect "+provider+" account?"))return;
+    await disconnectOAuth(provider);
+    const s=await getOAuthStatus();setStatus(s);setMsg(provider+" disconnected.");
+  }
+
+  if (!status) return null;
+
+  const providers=[
+    {key:"microsoft",label:"Microsoft OneDrive / SharePoint",icon:"🪟"},
+    {key:"google",label:"Google Drive / Sheets",icon:"🔵"},
+  ];
+
+  return(
+    <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden",marginBottom:14}}>
+      <div style={{padding:"10px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:14}}>🔐</span>
+        <span style={{fontWeight:700,fontSize:13,color:T.primary}}>Cloud storage accounts</span>
+        <span style={{fontSize:11,color:T.textMd}}>Connect once · access files without sharing</span>
+      </div>
+      {msg&&<div style={{padding:"8px 16px",fontSize:12,
+        color:msg.startsWith("✅")?T.success:msg.startsWith("❌")?"#A32D2D":T.textMd,
+        background:msg.startsWith("✅")?"rgba(45,106,79,0.08)":msg.startsWith("❌")?"rgba(163,45,45,0.07)":T.bgStat,
+        borderBottom:"0.5px solid "+T.border}}>{msg}</div>}
+      <div style={{display:"flex",flexWrap:"wrap"}}>
+        {providers.map((p,i)=>{
+          const info=status[p.key]||{};
+          return(
+            <div key={p.key} style={{flex:"1 1 200px",padding:"12px 16px",borderRight:i===0?"0.5px solid "+T.border:"none"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:18}}>{p.icon}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,fontSize:12,color:T.text}}>{p.label}</div>
+                  <div style={{fontSize:10,marginTop:2,color:info.connected?T.success:T.textMd}}>
+                    {info.connected?("✓ Connected"+(info.connectedAt?" · "+new Date(info.connectedAt).toLocaleDateString():""))
+                      :info.configured?"Not connected":"⚠ Not configured in Railway"}
+                  </div>
+                </div>
+                {info.connected
+                  ?<button onClick={()=>disconnect(p.key)} disabled={loading}
+                    style={{padding:"4px 10px",background:"none",border:"1px solid rgba(163,45,45,0.4)",borderRadius:5,cursor:"pointer",fontSize:11,color:"#A32D2D",flexShrink:0}}>
+                    Disconnect
+                  </button>
+                  :info.configured
+                    ?<button onClick={()=>connect(p.key)} disabled={loading}
+                      style={{padding:"4px 12px",background:T.primary,color:T.textLt,border:"none",borderRadius:5,cursor:loading?"not-allowed":"pointer",fontSize:11,fontWeight:600,flexShrink:0,opacity:loading?0.6:1}}>
+                      Connect
+                    </button>
+                    :<span style={{fontSize:10,color:"#A32D2D",flexShrink:0}}>Setup needed</span>
+                }
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
@@ -1468,11 +1559,10 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
       // If it looks like an auth/login problem AND it is a Microsoft URL → offer popup login
       const isAuthErr = msg.includes("401")||msg.includes("403")||
         msg.includes("sign-in")||msg.includes("preview page")||msg.includes("login")||
-        msg.includes("got-html")||msg.includes("Got a login");
-      if (isAuthErr && isMsUrl(url)) {
-        // Offer the popup login flow instead of a static error
-        setPhase("login-required");
-        setParseError(url);  // store URL in parseError for use by popup handler
+        msg.includes("got-html")||msg.includes("Got a login")||msg.includes("needs_auth");
+      if (isAuthErr) {
+        setParseError("Sign-in required. Use the Connect accounts panel above to connect your Microsoft or Google account, then retry.");
+        setPhase("error");
         return;
       }
       setParseError(msg + (msg.includes("404") ? " — check the link is correct." : ""));
@@ -1536,6 +1626,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     <div style={{padding:20,maxWidth:960,margin:"0 auto"}}>
 
       {(phase==="drop"||phase==="error")&&(<>
+          <OAuthPanel/>
         <div onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop}
           onClick={()=>libsReady&&fileRef.current.click()}
           style={{border:"2px dashed "+(dragOver?T.primary:T.border),borderRadius:14,padding:"52px 24px",textAlign:"center",

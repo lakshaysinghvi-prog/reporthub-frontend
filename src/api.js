@@ -93,3 +93,12 @@ export const fetchUrlViaProxy = (url, sheetName) =>
     method: 'POST',
     body: JSON.stringify({ url, sheetName })
   });
+
+// ── OAuth connection management ─────────────────────────────────────────────────
+export const getOAuthStatus = () => api('/auth/status');
+
+export const startMicrosoftAuth = () => api('/auth/microsoft/start');
+export const startGoogleAuth = () => api('/auth/google/start');
+
+export const disconnectOAuth = (provider) =>
+  api(`/auth/${provider}`, { method: 'DELETE' });
