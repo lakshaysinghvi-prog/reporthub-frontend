@@ -1553,7 +1553,17 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     try{
       const result = await fetchFromUrl(url, sheet);
       setLastRefresh(new Date());
-      processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
+      const urlName = url.split("/").pop().split("?")[0]||"Imported";
+      // If multiple sheets and no sheet was specified, show picker
+      if (!sheet && result.sheetNames && result.sheetNames.length > 1) {
+        setSheetNames(result.sheetNames);
+        // Store the fetched rows keyed by sheet name for immediate use after pick
+        // We re-fetch with the chosen sheet name via handleUrl(url, chosenSheet)
+        setPhase("url-sheet"); // new phase: sheet picker for URL-loaded files
+        setParseError(url);    // reuse parseError to store the URL
+        return;
+      }
+      processRaw(result.rows, urlName);
     }catch(e){
       const msg = e.message||"Unknown error";
       // If it looks like an auth/login problem AND it is a Microsoft URL → offer popup login
@@ -1798,6 +1808,50 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
             ))}
           </div>
           <button onClick={()=>{setPhase("drop");setWorkbook(null);}} style={{marginTop:14,fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Different file</button>
+        </div>
+      )}
+
+      {/* Sheet picker for URL-loaded files (no local workbook available) */}
+      {phase==="url-sheet"&&(
+        <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:2}}>Select a sheet</div>
+            <div style={{fontSize:12,color:T.textMd}}>
+              This workbook has {sheetNames.length} sheets. Which one should be loaded?
+            </div>
+          </div>
+          <div style={{padding:"12px 16px",display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10}}>
+            {sheetNames.map((name,i)=>(
+              <button key={name}
+                onClick={async()=>{
+                  const url=parseError;
+                  setRefreshSheet(name);
+                  setPhase("parsing"); setParseError("");
+                  try{
+                    const result=await fetchFromUrl(url,name);
+                    setLastRefresh(new Date());
+                    processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
+                  }catch(e){setParseError(e.message);setPhase("error");}
+                }}
+                style={{padding:"14px 16px",textAlign:"left",background:T.bgCard,border:"1px solid "+T.border,
+                  borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",gap:12,color:T.text}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=T.primary}
+                onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                <span style={{width:34,height:34,background:T.bgStat,borderRadius:8,display:"flex",
+                  alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>📄</span>
+                <div>
+                  <div style={{fontWeight:600,fontSize:13}}>{name}</div>
+                  <div style={{fontSize:11,color:T.textMd}}>Sheet {i+1}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div style={{padding:"10px 16px",borderTop:"0.5px solid "+T.border}}>
+            <button onClick={()=>{setPhase("drop");setParseError("");setSheetNames([]);}}
+              style={{fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+              Different URL
+            </button>
+          </div>
         </div>
       )}
 
@@ -2338,6 +2392,9 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
   const [activeId,setActiveId]=useState(null);
   const [loadedData,setLoadedData]=useState({}); // {reportId -> {rows,fields,numFields}}
   const [dataLoading,setDataLoading]=useState(false);
+  const [refreshing,setRefreshing]=useState(false);
+  const [lastRefreshed,setLastRefreshed]=useState(null);
+  const [refreshError,setRefreshError]=useState("");
 
   const publishedReports=useMemo(()=>savedReports.filter(r=>r.isPublished),[savedReports]);
   const currentMeta=useMemo(()=>{
@@ -2356,6 +2413,42 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
       .catch(e=>console.error("Load error",e))
       .finally(()=>setDataLoading(false));
   },[currentMeta]);
+
+  // Refresh from source URL (Google Drive / OneDrive) if configured
+  async function refreshFromSource() {
+    if (!currentMeta) return;
+    const links = currentMeta.config&&currentMeta.config.sourceLinks||[];
+    if (!links.length) return;
+    setRefreshing(true); setRefreshError("");
+    try {
+      // Fetch fresh data via backend (uses OAuth token)
+      const lk = links[0]; // primary link
+      const resp = await fetch(
+        (window.BACKEND_URL||"")+"/api/fetch-url",
+        { method:"POST",
+          headers:{"Content-Type":"application/json",
+            "Authorization":"Bearer "+(localStorage.getItem("rh_token")||"")},
+          body:JSON.stringify({url:lk.url, sheetName:lk.sheet||undefined}) }
+      );
+      if (!resp.ok) {
+        const err=await resp.json().catch(()=>({}));
+        throw new Error(err.message||err.error||"Refresh failed: HTTP "+resp.status);
+      }
+      const result = await resp.json();
+      // Update the loaded data cache for this report
+      const currentFields = currentData ? currentData.fields : result.rows.length?Object.keys(result.rows[0]):[];
+      setLoadedData(p=>({...p,[currentMeta.id]:{
+        rows:result.rows,
+        fields:currentFields,
+        numFields:currentData?currentData.numFields:new Set()
+      }}));
+      setLastRefreshed(new Date());
+    } catch(e) {
+      setRefreshError(e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
 
@@ -2395,13 +2488,37 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
       )}
       {!dataLoading&&currentMeta&&currentData?(
         <div style={{padding:20}}>
-          <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:4}}>
-            <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
-            <span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+              <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
+              <span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div style={{fontSize:11,color:T.textMd}}>
+                {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields
+                {lastRefreshed&&<span style={{marginLeft:8,color:T.success}}>· Refreshed {lastRefreshed.toLocaleTimeString()}</span>}
+              </div>
+              {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
+                <button onClick={refreshFromSource} disabled={refreshing}
+                  style={{display:"flex",alignItems:"center",gap:6,padding:"6px 14px",
+                    background:refreshing?"rgba(92,45,26,0.1)":T.primary,
+                    color:refreshing?T.textMd:T.textLt,border:"1px solid "+T.primary,
+                    borderRadius:7,cursor:refreshing?"not-allowed":"pointer",
+                    fontSize:12,fontWeight:600,transition:"all 0.15s"}}>
+                  <span style={{display:"inline-block",animation:refreshing?"spin 1s linear infinite":"none"}}>↻</span>
+                  {refreshing?"Refreshing...":"Refresh data"}
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>
-            {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields · Click cells to drill down
-          </div>
+          {refreshError&&(
+            <div style={{padding:"8px 12px",background:"rgba(163,45,45,0.07)",border:"1px solid rgba(163,45,45,0.25)",
+              borderRadius:7,fontSize:12,color:"#A32D2D",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+              <span>⚠</span><span>{refreshError}</span>
+              <button onClick={()=>setRefreshError("")} style={{marginLeft:"auto",background:"none",border:"none",cursor:"pointer",color:"#A32D2D",fontSize:14}}>×</button>
+            </div>
+          )}
+          <div style={{fontSize:12,color:T.textMd,marginBottom:14}}>Click cells to drill down</div>
           <Report
             config={currentMeta.config}
             data={currentData.rows}
