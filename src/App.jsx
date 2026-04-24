@@ -929,18 +929,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                 <th key={ri} style={{...thStyle,textAlign:"left",borderBottom:nV>1?"0.5px solid "+T.borderHd:"1px solid "+T.borderHd,
                   position:"relative",background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                     <span>{rf}{ri===0&&cF?<span style={{opacity:0.6,fontWeight:400}}> / {cF}</span>:null}</span>
-                     {ri===0&&cF&&onColFilter&&(
-                       <button onClick={e=>{e.stopPropagation();onColFilter();}}
-                         title="Show/hide column values"
-                         style={{background:colExcluded&&colExcluded.size>0?"rgba(200,146,42,0.35)":"rgba(255,255,255,0.13)",
-                           border:"1px solid rgba(255,255,255,0.2)",borderRadius:4,cursor:"pointer",
-                           fontSize:10,color:"rgba(245,239,230,0.9)",padding:"1px 7px",lineHeight:1.5,flexShrink:0}}>
-                         {colExcluded&&colExcluded.size>0?"⊟ "+colExcluded.size+" hidden":"⊞ cols"}
-                       </button>
-                     )}
-                   </div>
+                    <span>{rf}{ri===0&&cF?<span style={{opacity:0.6,fontWeight:400}}> / {cF}</span>:null}</span>
                     {onPivotFilter&&<DrillColFilter
                       field={rf}
                       data={result.rowKeys.map(rk=>({[rf]:rk[ri]}))}
@@ -1095,12 +1084,12 @@ function FormatSelector({value,onChange}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange}) {
   const [filters,setFilters]=useState({});
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
   const [colOrder,setColOrder]=useState(null);
-  const [excludedColVals,setExcludedColVals]=useState(new Set()); // pivot col values hidden
+  const [excludedColVals,setExcludedColVals]=useState(()=>new Set(config.colExcluded||[])); // persist to config
   const [showColFilter,setShowColFilter]=useState(false);
   const colFilterRef=useRef(null);
   const [adHocFields,setAdHocFields]=useState([]); // extra filters user adds in view mode
@@ -1110,7 +1099,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
   const adHocRef=useRef(null);
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
-  useEffect(()=>{if(result&&!result.error&&result.colVals){setColOrder(null);setExcludedColVals(new Set());}},[config]);
+  useEffect(()=>{if(result&&!result.error&&result.colVals){setColOrder(null);setExcludedColVals(new Set(config.colExcluded||[]));}},[config.columns,config.rows]);
   const setF=(f,v)=>setFilters(p=>({...p,[f]:v}));
   const hasActive=Object.values(filters).some(v=>v&&v.length);
   const cardFieldNames=useMemo(()=>(cardFields||[]).map(x=>typeof x==="string"?x:x.field),[cardFields]);
@@ -1127,6 +1116,15 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
     return()=>{clearTimeout(t);document.removeEventListener("click",h);};
   },[showAdHocPicker]);
   // Filtered colVals for PivotTable (excludes hidden column values)
+  // When excludedColVals changes, lift to parent so it gets saved with report
+  const updateExcluded=(fn)=>{
+    setExcludedColVals(prev=>{
+      const next=fn instanceof Set?fn:fn(prev);
+      onColExcludedChange&&onColExcludedChange([...next]);
+      return next;
+    });
+  };
+
   const filteredColVals=useMemo(()=>{
     if (!result||result.error||!result.colVals) return [];
     return result.colVals.filter(cv=>!excludedColVals.has(cv));
@@ -1214,8 +1212,8 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
         </div>
       )}
 
-      {/* Slicers — configured + ad-hoc */}
-      {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0)&&(
+      {/* Slicers + column value filter — in one unified filter bar */}
+      {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0||(result&&result.cF))&&(
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap",position:"relative",zIndex:200}}>
           <span style={{fontSize:12,color:T.textMd,fontWeight:600}}>Filters:</span>
           {slicerFields.map(f=><Slicer key={f} field={f} active={filters[f]||[]} onChange={v=>setF(f,v)} data={data}/>)}
@@ -1248,55 +1246,66 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               )}
             </div>
           )}
+          {/* Column value filter chip — looks like a Slicer but controls which col groups show */}
+          {result&&result.cF&&result.colVals&&result.colVals.length>0&&(
+            <div ref={colFilterRef} style={{position:"relative"}}>
+              <button onClick={()=>setShowColFilter(v=>!v)}
+                style={{display:"flex",alignItems:"center",gap:4,padding:"5px 10px",
+                  border:"1px solid "+(excludedColVals.size>0?T.primary:T.borderDk),
+                  borderRadius:6,background:excludedColVals.size>0?"rgba(92,45,26,0.08)":"none",
+                  cursor:"pointer",fontSize:12,
+                  color:excludedColVals.size>0?T.primary:T.text,fontWeight:excludedColVals.size>0?600:400}}>
+                {result.cF} {excludedColVals.size>0?"("+excludedColVals.size+" hidden)":""}
+                <span style={{fontSize:9,color:T.textMd,marginLeft:2}}>▾</span>
+              </button>
+              {showColFilter&&(
+                <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:9999,
+                  background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,
+                  minWidth:240,boxShadow:"0 6px 24px rgba(92,45,26,0.2)",overflow:"hidden"}}>
+                  <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,
+                    display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:T.primary}}>{result.cF} columns</span>
+                    <div style={{display:"flex",gap:10}}>
+                      <button onClick={()=>updateExcluded(new Set())}
+                        style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>All</button>
+                      <button onClick={()=>updateExcluded(new Set(result.colVals))}
+                        style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>None</button>
+                    </div>
+                  </div>
+                  <div style={{maxHeight:250,overflowY:"auto"}}>
+                    {result.colVals.map(cv=>{
+                      const hidden=excludedColVals.has(cv);
+                      const label=(cv===""||cv===null||cv===undefined)?"(blank)":String(cv);
+                      return(
+                        <label key={String(cv)} style={{display:"flex",alignItems:"center",gap:8,
+                          padding:"6px 12px",cursor:"pointer",
+                          background:!hidden?"none":"rgba(92,45,26,0.04)"}}>
+                          <input type="checkbox" checked={!hidden}
+                            onChange={()=>updateExcluded(prev=>{
+                              const n=new Set(prev);
+                              n.has(cv)?n.delete(cv):n.add(cv);
+                              return n;
+                            })}
+                            style={{accentColor:T.primary,width:13,height:13,cursor:"pointer"}}/>
+                          <span style={{fontSize:12,flex:1,color:hidden?T.textMd:T.text}}>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {excludedColVals.size>0&&(
+                    <div style={{padding:"6px 12px",borderTop:"0.5px solid "+T.border,fontSize:10,color:T.textMd}}>
+                      {excludedColVals.size} hidden · Total column shows all data
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {hasActive&&<button onClick={()=>setFilters({})} style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear all</button>}
         </div>
       )}
 
-      {/* Column value filter dropdown */}
-      {showColFilter&&result&&result.colVals&&(
-        <div ref={colFilterRef} style={{position:"relative",zIndex:201,marginBottom:8}}>
-          <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,
-            boxShadow:"0 6px 24px rgba(92,45,26,0.18)",padding:"14px 16px",minWidth:280,maxWidth:420}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-              <span style={{fontWeight:700,fontSize:13,color:T.primary}}>
-                Filter column values <span style={{fontWeight:400,color:T.textMd,fontSize:11}}>({result.cF})</span>
-              </span>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>setExcludedColVals(new Set())}
-                  style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
-                <button onClick={()=>setExcludedColVals(new Set(result.colVals))}
-                  style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Hide all</button>
-              </div>
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:260,overflowY:"auto"}}>
-              {result.colVals.map(cv=>{
-                const hidden=excludedColVals.has(cv);
-                const label=(cv===""||cv===null||cv===undefined)?"(blank)":cv;
-                return(
-                  <label key={cv} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",
-                    borderRadius:6,cursor:"pointer",background:hidden?"rgba(92,45,26,0.04)":"none",
-                    border:"1px solid "+(hidden?T.border:"transparent")}}>
-                    <input type="checkbox" checked={!hidden}
-                      onChange={()=>setExcludedColVals(prev=>{
-                        const n=new Set(prev);
-                        n.has(cv)?n.delete(cv):n.add(cv);
-                        return n;
-                      })}
-                      style={{accentColor:T.primary,width:14,height:14,cursor:"pointer"}}/>
-                    <span style={{fontSize:12,color:hidden?T.textMd:T.text,flex:1}}>{label}</span>
-                    {hidden&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>hidden</span>}
-                  </label>
-                );
-              })}
-            </div>
-            <div style={{marginTop:10,fontSize:11,color:T.textMd,borderTop:"0.5px solid "+T.border,paddingTop:8}}>
-              {excludedColVals.size>0
-                ?`${excludedColVals.size} column${excludedColVals.size>1?"s":""} hidden — Total column still shows all data`
-                :"All columns visible"}
-            </div>
-          </div>
-        </div>
-      )}
+
       <PivotTable result={result} numFmt={numFmt}
         colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
         onColReorder={result&&!result.error&&
@@ -2410,7 +2419,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
           <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
-            onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}/>
+            onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}
+            onColExcludedChange={cols=>setConfig(c=>({...c,colExcluded:cols}))}/>
         </div>
       )}
 
