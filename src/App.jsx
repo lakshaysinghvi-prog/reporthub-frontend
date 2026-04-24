@@ -1220,11 +1220,59 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
         </div>
       )}
 
+      {/* Column value filter dropdown */}
+      {showColFilter&&result&&result.colVals&&(
+        <div ref={colFilterRef} style={{position:"relative",zIndex:201,marginBottom:8}}>
+          <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,
+            boxShadow:"0 6px 24px rgba(92,45,26,0.18)",padding:"14px 16px",minWidth:280,maxWidth:420}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+              <span style={{fontWeight:700,fontSize:13,color:T.primary}}>
+                Filter column values <span style={{fontWeight:400,color:T.textMd,fontSize:11}}>({result.cF})</span>
+              </span>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>setExcludedColVals(new Set())}
+                  style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
+                <button onClick={()=>setExcludedColVals(new Set(result.colVals))}
+                  style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Hide all</button>
+              </div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:260,overflowY:"auto"}}>
+              {result.colVals.map(cv=>{
+                const hidden=excludedColVals.has(cv);
+                const label=(cv===""||cv===null||cv===undefined)?"(blank)":cv;
+                return(
+                  <label key={cv} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",
+                    borderRadius:6,cursor:"pointer",background:hidden?"rgba(92,45,26,0.04)":"none",
+                    border:"1px solid "+(hidden?T.border:"transparent")}}>
+                    <input type="checkbox" checked={!hidden}
+                      onChange={()=>setExcludedColVals(prev=>{
+                        const n=new Set(prev);
+                        n.has(cv)?n.delete(cv):n.add(cv);
+                        return n;
+                      })}
+                      style={{accentColor:T.primary,width:14,height:14,cursor:"pointer"}}/>
+                    <span style={{fontSize:12,color:hidden?T.textMd:T.text,flex:1}}>{label}</span>
+                    {hidden&&<span style={{fontSize:10,color:T.textMd,fontStyle:"italic"}}>hidden</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{marginTop:10,fontSize:11,color:T.textMd,borderTop:"0.5px solid "+T.border,paddingTop:8}}>
+              {excludedColVals.size>0
+                ?`${excludedColVals.size} column${excludedColVals.size>1?"s":""} hidden — Total column still shows all data`
+                :"All columns visible"}
+            </div>
+          </div>
+        </div>
+      )}
       <PivotTable result={result} numFmt={numFmt}
         colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
         onColReorder={result&&!result.error&&
           ((result.colVals&&result.colVals.length>1)||((!result.cF)&&result.vals&&result.vals.length>1))
           ?handleColReorder:undefined}
+        colExcluded={excludedColVals}
+        colFilter={result&&result.colVals?filteredColVals:undefined}
+        onColFilter={result&&result.cF&&result.colVals&&result.colVals.length>0?()=>setShowColFilter(v=>!v):undefined}
         pivotFilters={Object.keys(pivotFilters).length?pivotFilters:null}
         onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
         pivotSort={pivotSort}
