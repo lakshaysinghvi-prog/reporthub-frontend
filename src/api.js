@@ -94,6 +94,17 @@ export const fetchUrlViaProxy = (url, sheetName) =>
     body: JSON.stringify({ url, sheetName })
   });
 
+// ── Public API (no auth — for mobile/shared link access) ──────────────────────
+export const getPublishedReports = () => {
+  return fetch(`${BASE}/api/public/reports`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+};
+
+export const getPublishedReportData = (id) => {
+  return fetch(`${BASE}/api/public/reports/${id}/data`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+};
+
 // ── OAuth connection management ─────────────────────────────────────────────────
 export const getOAuthStatus = () => api('/auth/status');
 

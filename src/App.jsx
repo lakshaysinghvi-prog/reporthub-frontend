@@ -5,7 +5,8 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
          publishReport as apiPublishReport, unpublishReport as apiUnpublishReport,
          getReportData, fetchUrlViaProxy,
-         getOAuthStatus, startMicrosoftAuth, startGoogleAuth, disconnectOAuth } from "./api.js";
+         getOAuthStatus, startMicrosoftAuth, startGoogleAuth, disconnectOAuth,
+         getPublishedReports, getPublishedReportData } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -2847,7 +2848,16 @@ export default function App() {
     const username=localStorage.getItem("rh_username");
     if (token&&role&&username) {
       setCurrentUser(username);
-      loadAllReports().then(()=>setScreen(role)).catch(()=>setScreen("login"));
+      // Verify token is still valid by loading reports
+      // If expired/invalid → clear storage and show login
+      loadAllReports()
+        .then(()=>setScreen(role))
+        .catch(()=>{
+          localStorage.removeItem("rh_token");
+          localStorage.removeItem("rh_role");
+          localStorage.removeItem("rh_username");
+          setScreen("login");
+        });
     } else {
       setScreen("login");
     }
@@ -2855,15 +2865,12 @@ export default function App() {
 
   // ── Load report list from API ──────────────────────────────────────────────
   async function loadAllReports() {
-    try {
-      const list=await getReports();
-      const entries=list.map(parseReportMeta);
-      setSavedReports(entries);
-      const pub=entries.find(r=>r.isPublished);
-      setPublishedId(pub?pub.id:null);
-    } catch(e) {
-      setLoadErr("Could not load reports: "+e.message);
-    }
+    // NOTE: do NOT catch here — let caller handle auth errors
+    const list=await getReports();
+    const entries=list.map(parseReportMeta);
+    setSavedReports(entries);
+    const pub=entries.find(r=>r.isPublished);
+    setPublishedId(pub?pub.id:null);
   }
 
   // ── Lazy-load rows for a specific report ───────────────────────────────────
@@ -2957,5 +2964,6 @@ export default function App() {
       :<UserView
           onLogout={doLogout}
           savedReports={savedReports}
-          onLoadReportData={loadReportData}/>;
+          onLoadReportData={loadReportData}
+          isGuest={false}/>;
 }
