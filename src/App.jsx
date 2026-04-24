@@ -797,7 +797,7 @@ const ResizeHandle=({onMouseDown})=>(
 );
 
 // ── Pivot table ────────────────────────────────────────────────────────────────
-function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilters,onPivotFilter,pivotSort,onPivotSort}) {
+function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,colExcluded,onColFilter,pivotFilters,onPivotFilter,pivotSort,onPivotSort}) {
   // ── ALL hooks must come before any conditional return (Rules of Hooks) ──────
   const [dragOverCol,setDragOverCol]=useState(null);
   const [colWidths,startColResize]=useColResize(120);
@@ -865,8 +865,13 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
       })()
     : rowKeys;
 
-  // Use external colOrder if provided (for column group drag-reorder), else default
-  const orderedColVals=colOrder&&colOrder.length===colVals.length?colOrder:colVals;
+  // Use colFilter (filtered col values from Report), respecting drag reorder
+  const orderedColVals=(()=>{
+    const base = colFilter&&colFilter.length>=0 ? colFilter : colVals;
+    if (!colOrder||!colOrder.length) return base;
+    const ordered = colOrder.filter(v=>base.includes(v));
+    return ordered.length===base.length ? ordered : base;
+  })();
   const totalCells=rowKeys.length*Math.max(orderedColVals.length,1)*nV;
   if (totalCells>50000) return(
     <div style={{padding:"14px",background:"rgba(200,146,42,0.08)",border:"1px solid rgba(200,146,42,0.35)",borderRadius:8,fontSize:13,color:T.warning}}>
@@ -924,7 +929,18 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
                 <th key={ri} style={{...thStyle,textAlign:"left",borderBottom:nV>1?"0.5px solid "+T.borderHd:"1px solid "+T.borderHd,
                   position:"relative",background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
-                    <span>{rf}{ri===0&&cF?<span style={{opacity:0.6,fontWeight:400}}> / {cF}</span>:null}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                     <span>{rf}{ri===0&&cF?<span style={{opacity:0.6,fontWeight:400}}> / {cF}</span>:null}</span>
+                     {ri===0&&cF&&onColFilter&&(
+                       <button onClick={e=>{e.stopPropagation();onColFilter();}}
+                         title="Show/hide column values"
+                         style={{background:colExcluded&&colExcluded.size>0?"rgba(200,146,42,0.35)":"rgba(255,255,255,0.13)",
+                           border:"1px solid rgba(255,255,255,0.2)",borderRadius:4,cursor:"pointer",
+                           fontSize:10,color:"rgba(245,239,230,0.9)",padding:"1px 7px",lineHeight:1.5,flexShrink:0}}>
+                         {colExcluded&&colExcluded.size>0?"⊟ "+colExcluded.size+" hidden":"⊞ cols"}
+                       </button>
+                     )}
+                   </div>
                     {onPivotFilter&&<DrillColFilter
                       field={rf}
                       data={result.rowKeys.map(rk=>({[rf]:rk[ri]}))}
@@ -1084,6 +1100,9 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
   const [colOrder,setColOrder]=useState(null);
+  const [excludedColVals,setExcludedColVals]=useState(new Set()); // pivot col values hidden
+  const [showColFilter,setShowColFilter]=useState(false);
+  const colFilterRef=useRef(null);
   const [adHocFields,setAdHocFields]=useState([]); // extra filters user adds in view mode
   const [drillHiddenCols,setDrillHiddenCols]=useState(()=>config.drillHiddenCols||[]); // init from saved config
   const [pivotFilters,setPivotFilters]=useState({}); // {rowFieldIdx: [selectedValues]}
@@ -1091,7 +1110,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
   const adHocRef=useRef(null);
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
-  useEffect(()=>{if(result&&!result.error&&result.colVals)setColOrder(null);},[config]);
+  useEffect(()=>{if(result&&!result.error&&result.colVals){setColOrder(null);setExcludedColVals(new Set());}},[config]);
   const setF=(f,v)=>setFilters(p=>({...p,[f]:v}));
   const hasActive=Object.values(filters).some(v=>v&&v.length);
   const cardFieldNames=useMemo(()=>(cardFields||[]).map(x=>typeof x==="string"?x:x.field),[cardFields]);
@@ -1107,11 +1126,24 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
     const t=setTimeout(()=>document.addEventListener("click",h),10);
     return()=>{clearTimeout(t);document.removeEventListener("click",h);};
   },[showAdHocPicker]);
+  // Filtered colVals for PivotTable (excludes hidden column values)
+  const filteredColVals=useMemo(()=>{
+    if (!result||result.error||!result.colVals) return [];
+    return result.colVals.filter(cv=>!excludedColVals.has(cv));
+  },[result,excludedColVals]);
+
+  // Close col-filter dropdown when clicking outside
+  useEffect(()=>{
+    if (!showColFilter) return;
+    const h=e=>{if(colFilterRef.current&&!colFilterRef.current.contains(e.target))setShowColFilter(false);};
+    const t=setTimeout(()=>document.addEventListener('click',h),10);
+    return()=>{clearTimeout(t);document.removeEventListener('click',h);};
+  },[showColFilter]);
+
   function handleColReorder(from,to) {
-    // Two modes: (1) column field set - reorder colVals; (2) no column field - reorder value metric names
     const hasColField=result&&result.colVals&&result.colVals.length>0;
     const base=hasColField
-      ?(colOrder||[...result.colVals])
+      ?(colOrder||[...filteredColVals])
       :(colOrder||(config.values||[]).map(v=>v.field));
     const fi=base.indexOf(from),ti=base.indexOf(to);
     if(fi===-1||ti===-1)return;
