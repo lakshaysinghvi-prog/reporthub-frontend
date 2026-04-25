@@ -20,6 +20,18 @@ const T = {
   tagR:"#534AB7", tagC:"#0F6E56", tagV:"#8B5A2B", tagF:"#185FA5", tagK:"#4A3060",
 };
 
+// ── useViewport hook — true if mobile (<700px) ────────────────────────────────
+function useViewport() {
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 700 : false);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 700);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+}
+
+
 // ── Number formats ─────────────────────────────────────────────────────────────
 const NUM_FORMATS = [
   { key:"Cr",    label:"Crores",    div:1e7, suffix:" Cr", dec:2 },
@@ -797,6 +809,159 @@ const ResizeHandle=({onMouseDown})=>(
 );
 
 // ── Pivot table ────────────────────────────────────────────────────────────────
+// ── Chart View — visualisations of pivot result ─────────────────────────────────
+function ChartView({result, numFmt, chartType, onChartTypeChange}) {
+  if (!result || result.error) return null;
+  const { cells, vals, rowKeys, colVals, grandTotals } = result;
+  const hasGroups = colVals && colVals.length > 0;
+  const nV = vals.length;
+
+  if (!rowKeys.length || !nV) {
+    return (
+      <div style={{padding:"40px 20px",textAlign:"center",color:T.textMd,background:T.bgCard,
+        borderRadius:10,border:"1px solid "+T.border}}>
+        Configure rows and values in the builder to see charts.
+      </div>
+    );
+  }
+
+  // Use Recharts from window if available, else show notice
+  const R = window.Recharts;
+  if (!R) {
+    return (
+      <div style={{padding:"30px 20px",textAlign:"center",color:T.textMd,background:T.bgCard,
+        borderRadius:10,border:"1px dashed "+T.border}}>
+        Charts library is loading… please wait a moment and try again.
+      </div>
+    );
+  }
+
+  // Build chart-friendly data: one entry per row, with one numeric value per col group + metric
+  const chartData = rowKeys.map(rk => {
+    const rkStr = rk.join("\0");
+    const cellRow = cells[rkStr] || {};
+    const out = { name: rk.join(" · ") };
+    if (hasGroups) {
+      colVals.forEach(cv => {
+        vals.forEach((v, vi) => {
+          const key = (nV > 1) ? `${cv} — ${v.field}` : cv;
+          out[key] = ((cellRow[cv] || [])[vi]) || 0;
+        });
+      });
+    } else {
+      vals.forEach((v, vi) => {
+        out[v.field] = ((cellRow["__total__"] || [])[vi]) || 0;
+      });
+    }
+    return out;
+  });
+
+  // Series keys (one per coloured bar/line/slice)
+  let series = [];
+  if (hasGroups) {
+    colVals.forEach(cv => {
+      vals.forEach(v => {
+        series.push((nV > 1) ? `${cv} — ${v.field}` : cv);
+      });
+    });
+  } else {
+    vals.forEach(v => series.push(v.field));
+  }
+
+  const palette = [T.primary, T.accent, "#7B5C3E", "#A07850", "#5C2D1A", "#C8922A", "#8B6B4A", "#3D1F11"];
+
+  const fmt = (n) => fmtNum(n, "sum", "", numFmt).replace("₹","");
+
+  // ── Chart renderers ───────────────────────────────────────────────────────────
+  const containerStyle = { width: "100%", height: 460 };
+
+  let chartEl = null;
+  if (chartType === "bar") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.BarChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Bar key={s} dataKey={s} fill={palette[i%palette.length]}/>)}
+        </R.BarChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "line") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.LineChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Line key={s} type="monotone" dataKey={s} stroke={palette[i%palette.length]} strokeWidth={2} dot={{r:3}}/>)}
+        </R.LineChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "pie") {
+    // Pie: only first series (sum across rows)
+    const pieData = chartData.map(d => ({ name: d.name, value: d[series[0]] || 0 }));
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.PieChart>
+          <R.Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={140}
+            label={(e)=>`${e.name}: ${fmtNum(e.value,"sum","",numFmt)}`}>
+            {pieData.map((_,i)=><R.Cell key={i} fill={palette[i%palette.length]}/>)}
+          </R.Pie>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}/>
+          <R.Legend wrapperStyle={{fontSize:11}}/>
+        </R.PieChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "area") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.AreaChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Area key={s} type="monotone" dataKey={s} stackId="1" stroke={palette[i%palette.length]} fill={palette[i%palette.length]} fillOpacity={0.6}/>)}
+        </R.AreaChart>
+      </R.ResponsiveContainer>
+    );
+  }
+
+  return (
+    <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,padding:"18px 16px",
+      boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+        <div style={{fontWeight:700,fontSize:13,color:T.primary}}>Chart visualisation</div>
+        <div style={{display:"flex",gap:4,background:T.bgStat,borderRadius:7,padding:3,border:"0.5px solid "+T.border}}>
+          {[
+            {k:"bar",   l:"📊 Bar"},
+            {k:"line",  l:"📈 Line"},
+            {k:"area",  l:"📉 Area"},
+            {k:"pie",   l:"🥧 Pie"},
+          ].map(b=>(
+            <button key={b.k} onClick={()=>onChartTypeChange(b.k)}
+              style={{padding:"4px 12px",border:"none",borderRadius:5,
+                background:chartType===b.k?T.primary:"none",
+                color:chartType===b.k?T.textLt:T.textMd,
+                cursor:"pointer",fontSize:11,fontWeight:600}}>
+              {b.l}
+            </button>
+          ))}
+        </div>
+      </div>
+      {chartEl}
+    </div>
+  );
+}
+
 function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,colExcluded,onColFilter,pivotFilters,onPivotFilter,pivotSort,onPivotSort}) {
   // ── ALL hooks must come before any conditional return (Rules of Hooks) ──────
   const [dragOverCol,setDragOverCol]=useState(null);
@@ -1084,7 +1249,7 @@ function FormatSelector({value,onChange}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange}) {
   const [filters,setFilters]=useState({});
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
@@ -1096,6 +1261,8 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const [drillHiddenCols,setDrillHiddenCols]=useState(()=>config.drillHiddenCols||[]); // init from saved config
   const [pivotFilters,setPivotFilters]=useState({}); // {rowFieldIdx: [selectedValues]}
   const [pivotSort,setPivotSort]=useState(null); // {fieldIdx, dir}
+  const [viewMode,setViewMode]=useState("table"); // "table" | "chart"
+  const [chartType,setChartType]=useState("bar"); // bar | line | area | pie
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
   const adHocRef=useRef(null);
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
@@ -1151,8 +1318,86 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
 
   return(
     <div>
-      {/* Format selector + export row */}
+      {/* Tab strip — multi-section reports */}
+      {tabs&&tabs.length>0&&(
+        <div style={{display:"flex",gap:0,marginBottom:14,borderBottom:"2px solid "+T.border,overflowX:"auto",alignItems:"flex-end"}}>
+          {tabs.map((t,i)=>(
+            <div key={t.id||i} style={{position:"relative",display:"flex",alignItems:"center"}}>
+              <button onClick={()=>onTabChange&&onTabChange(i)}
+                style={{padding:"8px 16px",border:"none",
+                  background:i===activeTabIdx?T.bgCard:"none",
+                  color:i===activeTabIdx?T.primary:T.textMd,
+                  fontWeight:i===activeTabIdx?700:500,
+                  fontSize:13,cursor:"pointer",
+                  borderTopLeftRadius:8,borderTopRightRadius:8,
+                  borderBottom:i===activeTabIdx?"2px solid "+T.primary:"none",
+                  marginBottom:i===activeTabIdx?-2:0,whiteSpace:"nowrap"}}>
+                {t.name||"Untitled"}
+              </button>
+              {onTabsChange&&tabs.length>1&&i===activeTabIdx&&(
+                <button onClick={(e)=>{
+                    e.stopPropagation();
+                    if(confirm("Delete tab \""+(t.name||"Untitled")+"\"?")){
+                      const nt=tabs.filter((_,idx)=>idx!==i);
+                      onTabsChange(nt);
+                      if(activeTabIdx>=nt.length)onTabChange(Math.max(0,nt.length-1));
+                    }
+                  }}
+                  title="Delete tab"
+                  style={{position:"absolute",top:6,right:4,background:"none",border:"none",
+                    cursor:"pointer",fontSize:11,color:T.textMd,padding:"0 4px",lineHeight:1}}>
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          {onTabsChange&&(
+            <button onClick={()=>{
+                const name=prompt("Name for new tab?","Tab "+(tabs.length+1));
+                if(!name)return;
+                const newTab={id:"t"+Date.now(),name,config:{...config},cardFields:[...(cardFields||[])]};
+                onTabsChange([...tabs,newTab]);
+                onTabChange&&onTabChange(tabs.length);
+              }}
+              title="Add new tab"
+              style={{padding:"8px 12px",border:"1px dashed "+T.border,background:"none",
+                color:T.textMd,fontSize:12,cursor:"pointer",borderRadius:6,marginLeft:6,marginBottom:2}}>
+              + Tab
+            </button>
+          )}
+          {onTabsChange&&tabs.length>0&&(
+            <button onClick={()=>{
+                const cur=tabs[activeTabIdx];
+                const newName=prompt("Rename tab:",cur.name||"");
+                if(newName===null||!newName.trim())return;
+                const nt=tabs.map((t,i)=>i===activeTabIdx?{...t,name:newName.trim()}:t);
+                onTabsChange(nt);
+              }}
+              title="Rename current tab"
+              style={{padding:"5px 10px",border:"none",background:"none",color:T.textMd,fontSize:11,cursor:"pointer",marginLeft:4,marginBottom:6}}>
+              ✏ Rename
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Format selector + view toggle + export row */}
       <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+        {/* Table / Chart toggle */}
+        <div style={{display:"flex",gap:3,background:T.bgStat,borderRadius:7,padding:3,border:"0.5px solid "+T.border}}>
+          <button onClick={()=>setViewMode("table")}
+            style={{padding:"5px 14px",border:"none",borderRadius:5,
+              background:viewMode==="table"?T.primary:"none",color:viewMode==="table"?T.textLt:T.textMd,
+              cursor:"pointer",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+            <span>▦</span> Table
+          </button>
+          <button onClick={()=>setViewMode("chart")}
+            style={{padding:"5px 14px",border:"none",borderRadius:5,
+              background:viewMode==="chart"?T.primary:"none",color:viewMode==="chart"?T.textLt:T.textMd,
+              cursor:"pointer",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+            <span>📊</span> Chart
+          </button>
+        </div>
         <FormatSelector value={numFmt} onChange={setNumFmt}/>
         {hasActive&&<button onClick={()=>setFilters({})} style={{fontSize:12,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear all filters</button>}
         {showExport&&result&&!result.error&&(
@@ -1306,19 +1551,22 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
       )}
 
 
-      <PivotTable result={result} numFmt={numFmt}
-        colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
-        onColReorder={result&&!result.error&&
-          ((result.colVals&&result.colVals.length>1)||((!result.cF)&&result.vals&&result.vals.length>1))
-          ?handleColReorder:undefined}
-        colExcluded={excludedColVals}
-        colFilter={result&&result.colVals?filteredColVals:undefined}
-        onColFilter={result&&result.cF&&result.colVals&&result.colVals.length>0?()=>setShowColFilter(v=>!v):undefined}
-        pivotFilters={Object.keys(pivotFilters).length?pivotFilters:null}
-        onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
-        pivotSort={pivotSort}
-        onPivotSort={setPivotSort}
-        onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
+      {viewMode==="table"
+        ? <PivotTable result={result} numFmt={numFmt}
+            colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
+            onColReorder={result&&!result.error&&
+              ((result.colVals&&result.colVals.length>1)||((!result.cF)&&result.vals&&result.vals.length>1))
+              ?handleColReorder:undefined}
+            colExcluded={excludedColVals}
+            colFilter={result&&result.colVals?filteredColVals:undefined}
+            onColFilter={result&&result.cF&&result.colVals&&result.colVals.length>0?()=>setShowColFilter(v=>!v):undefined}
+            pivotFilters={Object.keys(pivotFilters).length?pivotFilters:null}
+            onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
+            pivotSort={pivotSort}
+            onPivotSort={setPivotSort}
+            onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
+        : <ChartView result={result} numFmt={numFmt} chartType={chartType} onChartTypeChange={setChartType}/>
+      }
 
       {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt}
         savedHiddenCols={drillHiddenCols}
@@ -1413,13 +1661,13 @@ function AppHeader({role, onLogout, children}) {
     <div style={{position:"sticky",top:0,zIndex:50,background:T.bgHeader,borderBottom:"2px solid "+T.borderHd,
       padding:"0 20px",display:"flex",alignItems:"center",gap:12,height:52,
       boxShadow:"0 2px 12px rgba(44,24,16,0.3)"}}>
-      <span style={{fontWeight:700,fontSize:15,color:T.textLt,letterSpacing:"-0.3px"}}>
+      <span style={{fontWeight:700,fontSize:isMobile?14:15,color:T.textLt,letterSpacing:"-0.3px"}}>
         <span style={{color:T.accent}}>Report</span>Hub
       </span>
-      <span style={{color:"rgba(245,239,230,0.3)"}}>|</span>
-      <span style={{fontSize:11,color:T.textLt,background:"rgba(255,255,255,0.12)",padding:"2px 10px",borderRadius:4,fontWeight:500}}>{role}</span>
+      {!isMobile&&<span style={{color:"rgba(245,239,230,0.3)"}}>|</span>}
+      {!isMobile&&<span style={{fontSize:11,color:T.textLt,background:"rgba(255,255,255,0.12)",padding:"2px 10px",borderRadius:4,fontWeight:500}}>{role}</span>}
       <div style={{flex:1}}/>{children}
-      <button onClick={onLogout} style={{padding:"5px 14px",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt}}>Logout</button>
+      <button onClick={onLogout} style={{padding:isMobile?"5px 10px":"5px 14px",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt}}>{isMobile?"Out":"Logout"}</button>
     </div>
   );
 }
@@ -2150,6 +2398,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [apiLoading,setApiLoading]=useState(false);
   const [activeReportId,setActiveReportId]=useState(null); // id of report currently open in builder
   const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
+  const [activeTabIdx,setActiveTabIdx]=useState(0); // active tab in multi-tab report
 
   const effectiveNumFields=useMemo(()=>{
     if (!dataset) return new Set();
@@ -2419,6 +2668,22 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
           <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
+            tabs={config.tabs||null}
+            activeTabIdx={activeTabIdx}
+            onTabChange={(idx)=>{
+              setActiveTabIdx(idx);
+              const tabs=config.tabs||[];
+              if(tabs[idx]){
+                // Switch builder to that tab's config
+                setConfig(c=>({...c,...tabs[idx].config,name:c.name,tabs:c.tabs}));
+                if(tabs[idx].cardFields)setCardFields(tabs[idx].cardFields);
+              }
+            }}
+            onTabsChange={(newTabs)=>{
+              // Persist the current builder state into the active tab before saving
+              const updated=newTabs.map((t,i)=>i===activeTabIdx?{...t,config:{...config,tabs:undefined},cardFields:[...cardFields]}:t);
+              setConfig(c=>({...c,tabs:updated}));
+            }}
             onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}
             onColExcludedChange={cols=>setConfig(c=>({...c,colExcluded:cols}))}/>
         </div>
@@ -2485,6 +2750,7 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
   const [refreshing,setRefreshing]=useState(false); // background refresh (doesn't blank report)
   const [lastRefreshed,setLastRefreshed]=useState(null);
   const [refreshError,setRefreshError]=useState("");
+  const [userActiveTabIdx,setUserActiveTabIdx]=useState(0);
   const autoRefreshRef=useRef(null);
 
   // ── localStorage cache helpers ──────────────────────────────────────────────
@@ -2523,6 +2789,8 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
     if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReports[0]||null;
     return publishedReports[0]||null;
   },[activeId,savedReports,publishedReports]);
+
+  useEffect(()=>{ setUserActiveTabIdx(0); },[currentMeta?.id]);
 
   // Load data when report changes — show cache instantly, fetch DB in background
   useEffect(()=>{
@@ -2659,12 +2927,19 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
           )}
           <div style={{fontSize:12,color:T.textMd,marginBottom:14}}>Click cells to drill down</div>
           <Report
-            config={currentMeta.config}
+            config={currentMeta.config&&currentMeta.config.tabs&&currentMeta.config.tabs[userActiveTabIdx]
+              ? {...currentMeta.config,...currentMeta.config.tabs[userActiveTabIdx].config}
+              : currentMeta.config}
             data={currentData.rows}
             fields={currentData.fields}
             numFields={currentData.numFields}
             showExport
-            cardFields={currentMeta.cardFields||[]}/>
+            cardFields={currentMeta.config&&currentMeta.config.tabs&&currentMeta.config.tabs[userActiveTabIdx]
+              ? (currentMeta.config.tabs[userActiveTabIdx].cardFields||[])
+              : (currentMeta.cardFields||[])}
+            tabs={currentMeta.config&&currentMeta.config.tabs||null}
+            activeTabIdx={userActiveTabIdx}
+            onTabChange={setUserActiveTabIdx}/>
         </div>
       ):(!dataLoading&&<div style={{padding:40,textAlign:"center",fontSize:13,color:T.textMd}}>Select a report above.</div>)}
     </div>
@@ -2795,9 +3070,10 @@ function SettingsPanel({currentUser,onClose}) {
 function Login({onLogin}) {
   const [username,setUsername]=useState("");
   const [password,setPassword]=useState("");
+  const [showPwd,setShowPwd]=useState(false);
   const [err,setErr]=useState("");
   const [loading,setLoading]=useState(false);
-  const inp={width:"100%",padding:"9px 12px",border:"1px solid "+T.border,borderRadius:7,fontSize:13,background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none"};
+  const inp={width:"100%",padding:"10px 12px",border:"1px solid "+T.border,borderRadius:8,fontSize:14,background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none"};
   async function tryLogin(){
     if (!username.trim()||!password){setErr("Enter username and password.");return;}
     setLoading(true);setErr("");
@@ -2805,34 +3081,48 @@ function Login({onLogin}) {
       const data=await apiLogin(username.trim(),password);
       onLogin(data.role,data.username,data.token);
     }catch(e){
-      setErr(e.message||"Login failed. Check credentials.");
+      const msg=e.message||"";
+      if (msg.includes("Failed to fetch")||msg.includes("NetworkError")||msg.includes("ERR_NETWORK"))
+        setErr("Cannot reach the server. Please check your internet connection and try again.");
+      else if (msg.includes("401")||msg.includes("Invalid"))
+        setErr("Wrong username or password. Please try again.");
+      else
+        setErr(msg||"Login failed. Please try again.");
     }finally{setLoading(false);}
   }
   return(
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
-      <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:16,padding:"40px 36px",width:380,boxShadow:"0 4px 24px rgba(92,45,26,0.15)"}}>
-        <div style={{textAlign:"center",marginBottom:24}}>
-          <div style={{width:54,height:54,background:T.primary,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,margin:"0 auto 14px"}}>📊</div>
-          <h2 style={{fontSize:22,fontWeight:800,margin:"0 0 4px",color:T.primary,letterSpacing:"-0.5px"}}>ReportHub</h2>
-          <p style={{fontSize:12,color:T.textMd,margin:0}}>Upload Excel · Pivot reports · Drill-down · Crore/Lakh</p>
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,fontFamily:"system-ui,sans-serif",padding:"20px"}}>
+      <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:16,padding:"40px 32px",width:"100%",maxWidth:380,boxShadow:"0 4px 24px rgba(92,45,26,0.15)"}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{width:60,height:60,background:T.primary,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 16px"}}>📊</div>
+          <h2 style={{fontSize:24,fontWeight:800,margin:"0",color:T.primary,letterSpacing:"-0.5px"}}>ReportHub</h2>
         </div>
-        {err&&<div style={{padding:"8px 12px",background:"rgba(163,45,45,0.09)",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,fontSize:12,color:T.danger,marginBottom:12}}>{err}</div>}
-        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+        {err&&<div style={{padding:"10px 14px",background:"rgba(163,45,45,0.09)",border:"1px solid rgba(163,45,45,0.3)",borderRadius:8,fontSize:12,color:T.danger,marginBottom:14,lineHeight:1.5}}>{err}</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:18}}>
           <div>
-            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:4}}>Username</div>
+            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:5}}>Username</div>
             <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="Enter username"
+              autoComplete="username"
               style={inp} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
           </div>
           <div>
-            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:4}}>Password</div>
-            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"
-              style={inp} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
+            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:5}}>Password</div>
+            <div style={{position:"relative"}}>
+              <input type={showPwd?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"
+                autoComplete="current-password"
+                style={{...inp,paddingRight:44}} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
+              <button type="button" onClick={()=>setShowPwd(v=>!v)}
+                title={showPwd?"Hide password":"Show password"}
+                style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",
+                  background:"none",border:"none",cursor:"pointer",fontSize:14,color:T.textMd,padding:"4px 6px"}}>
+                {showPwd?"🙈":"👁"}
+              </button>
+            </div>
           </div>
         </div>
-        <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"10px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700}}>
+        <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"11px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700,letterSpacing:"0.3px"}}>
           {loading?"Signing in…":"Sign in"}
         </button>
-
       </div>
     </div>
   );
