@@ -170,7 +170,19 @@ function runPivot(data,config,filters) {
   try {
     // Filter by ALL active filters — configured slicers AND card filter clicks
     const allFilterKeys=[...new Set([...config.filters,...Object.keys(filters).filter(k=>filters[k]&&filters[k].length)])];
-    const filtered=data.filter(row=>allFilterKeys.every(f=>{const s=filters[f]||[];return !s.length||s.includes(String(row[f]||""));}));
+    const filtered=data.filter(row=>allFilterKeys.every(f=>{
+      const s=filters[f]||[];
+      if(!s.length) return true;
+      // Special numeric filter values
+      if(s.includes("__has__")||s.includes("__zero__")){
+        const v=row[f];
+        const isZero = v===null||v===undefined||v===""||Number(v)===0;
+        if(s.includes("__has__")&&!isZero) return true;
+        if(s.includes("__zero__")&&isZero) return true;
+        return false;
+      }
+      return s.includes(String(row[f]||""));
+    }));
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>doAgg(sub,v.field,v.agg));
@@ -582,18 +594,61 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
   const cardOff = {...cardBase, background:T.bgCard};
   const cardKpi = {...cardBase, background:T.bgStat, cursor:"default"};
 
-  // ── NUMERIC FIELD: single KPI tile, no click filter ──────────────────────────
+  // ── NUMERIC FIELD: clickable cards — split rows by has-value vs zero/blank ────
   if (isNumericField) {
     const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
+    // Two buckets: rows where the field has a non-zero value, and rows where it doesn't
+    const withVal = data.filter(r => {
+      const v = r[field];
+      return v !== null && v !== undefined && v !== "" && Number(v) !== 0;
+    });
+    const withoutVal = data.filter(r => {
+      const v = r[field];
+      return v === null || v === undefined || v === "" || Number(v) === 0;
+    });
+    const filterValues = ["__has__","__zero__"];
+    const isOn = (key) => active.includes(key);
     return (
       <div>
-        <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
-          {field} <span style={{fontWeight:400,fontSize:9}}>Metric total</span>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+          <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
+          {!allActive && (
+            <button onClick={()=>onFilter([])}
+              style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+              Clear
+            </button>
+          )}
         </div>
-        <div style={cardKpi}>
-          <div style={{fontSize:9,color:T.textMd,marginBottom:2}}>{displayVal.agg} of {displayVal.field}</div>
-          <div style={{fontSize:17,fontWeight:700,color:T.numColor}}>{total}</div>
-          <div style={{fontSize:9,color:T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4}}>
+          {/* All — total of all rows */}
+          <button onClick={()=>onFilter([])}
+            style={allActive?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
+            <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>All</div>
+            <div style={{fontSize:14,fontWeight:700,color:allActive?T.textLt:T.numColor}}>{total}</div>
+            <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+          </button>
+          {/* Has value */}
+          {withVal.length>0 && (
+            <button onClick={()=>onFilter(isOn("__has__")?[]:["__has__"])}
+              style={isOn("__has__")?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
+              <div style={{fontSize:9,color:isOn("__has__")?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>Has value</div>
+              <div style={{fontSize:14,fontWeight:700,color:isOn("__has__")?T.textLt:T.numColor}}>
+                {fmtNum(doAgg(withVal,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+              </div>
+              <div style={{fontSize:9,color:isOn("__has__")?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{withVal.length.toLocaleString()} rows</div>
+            </button>
+          )}
+          {/* Zero / blank */}
+          {withoutVal.length>0 && (
+            <button onClick={()=>onFilter(isOn("__zero__")?[]:["__zero__"])}
+              style={isOn("__zero__")?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
+              <div style={{fontSize:9,color:isOn("__zero__")?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>Zero / blank</div>
+              <div style={{fontSize:14,fontWeight:700,color:isOn("__zero__")?T.textLt:T.numColor}}>
+                {fmtNum(doAgg(withoutVal,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+              </div>
+              <div style={{fontSize:9,color:isOn("__zero__")?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{withoutVal.length.toLocaleString()} rows</div>
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1539,7 +1594,18 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               // Cross-filter: show data filtered by all OTHER active card/slicer filters
               const otherFilters=Object.fromEntries(Object.entries(filters).filter(([k])=>k!==f));
               const otherKeys=[...new Set([...config.filters,...Object.keys(otherFilters).filter(k=>otherFilters[k]&&otherFilters[k].length)])];
-              const cardData=otherKeys.length?data.filter(row=>otherKeys.every(ff=>{const s=otherFilters[ff]||[];return !s.length||s.includes(String(row[ff]||""));})):data;
+              const cardData=otherKeys.length?data.filter(row=>otherKeys.every(ff=>{
+                const s=otherFilters[ff]||[];
+                if(!s.length) return true;
+                if(s.includes("__has__")||s.includes("__zero__")){
+                  const v=row[ff];
+                  const isZero=v===null||v===undefined||v===""||Number(v)===0;
+                  if(s.includes("__has__")&&!isZero) return true;
+                  if(s.includes("__zero__")&&isZero) return true;
+                  return false;
+                }
+                return s.includes(String(row[ff]||""));
+              })):data;
               // Override primaryVal with card's own agg for numeric fields
               const cardPrimary=numFields&&numFields.has(f)?{field:f,agg:cardAgg}:primaryVal;
               return(
@@ -2561,10 +2627,19 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     setApiLoading(true);
     try{
       if (overwrite&&activeReportId) {
-        // Delete old then save with same name (Railway API doesn't have PATCH for full data)
         await onDeleteReport(activeReportId);
       }
-      const id=await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
+      // Sync the currently active tab's latest config into config.tabs before saving
+      let configToSave = {...config};
+      if (config.tabs && config.tabs.length > 0) {
+        const updatedTabs = config.tabs.map((t,i)=>
+          i===activeTabIdx
+            ? {...t, config:{...config, tabs:undefined, name:undefined}, cardFields:[...cardFields]}
+            : t
+        );
+        configToSave = {...config, tabs: updatedTabs};
+      }
+      const id=await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config:configToSave,cardFields});
       setActiveReportId(id);
       showToast(overwrite?"Report updated!":"Report saved as new!");
     }catch(e){showToast("Save failed: "+e.message);}
