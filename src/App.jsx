@@ -1337,7 +1337,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               {onTabsChange&&tabs.length>1&&i===activeTabIdx&&(
                 <button onClick={(e)=>{
                     e.stopPropagation();
-                    if(confirm("Delete tab \""+(t.name||"Untitled")+"\"?")){
+                    if(confirm("Delete tab "+(t.name||"Untitled")+"?")){
                       const nt=tabs.filter((_,idx)=>idx!==i);
                       onTabsChange(nt);
                       if(activeTabIdx>=nt.length)onTabChange(Math.max(0,nt.length-1));
@@ -1657,9 +1657,10 @@ function FieldRow({field, isNum, status, onToggle, onToggleType, onToggleCard}) 
 
 // ── App header ─────────────────────────────────────────────────────────────────
 function AppHeader({role, onLogout, children}) {
+  const isMobile = useViewport();
   return(
     <div style={{position:"sticky",top:0,zIndex:50,background:T.bgHeader,borderBottom:"2px solid "+T.borderHd,
-      padding:"0 20px",display:"flex",alignItems:"center",gap:12,height:52,
+      padding:isMobile?"0 12px":"0 20px",display:"flex",alignItems:"center",gap:isMobile?6:12,height:52,
       boxShadow:"0 2px 12px rgba(44,24,16,0.3)"}}>
       <span style={{fontWeight:700,fontSize:isMobile?14:15,color:T.textLt,letterSpacing:"-0.3px"}}>
         <span style={{color:T.accent}}>Report</span>Hub
