@@ -1,8 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>ReportHub</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -10,18 +9,23 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif}</style>
+<script src="https://cdn.jsdelivr.net/npm/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif}
+  /* Mobile-friendly tap targets */
+  @media (max-width: 700px) {
+    button { min-height: 36px; }
+    input, select { font-size: 16px !important; } /* prevent iOS zoom on focus */
+  }
+</style>
 </head>
 <body>
 <div id="root"></div>
-
 <script>
-// ════════════════════════════════════════════════════════════════════
-//  STEP 1: Set your Railway backend URL here before opening this file
-// ════════════════════════════════════════════════════════════════════
-const BACKEND_URL = "https://reporthub-api-production-5992.up.railway.app";
-// Example: const BACKEND_URL = "https://reporthub-api-production.up.railway.app";
-
+const BACKEND_URL = "https://YOUR-RAILWAY-URL.up.railway.app";
+const BASE = BACKEND_URL;
 // src/api.js  —  All calls to the ReportHub backend
 // VITE_API_URL is set in .env (e.g. https://reporthub-api.railway.app)
 
@@ -98,6 +102,9 @@ const deleteReport = (id) =>
 const publishReport = (id) =>
   api(`/api/reports/${id}/publish`, { method: 'PATCH' });
 
+const unpublishReport = (id) =>
+  api(`/api/reports/${id}/unpublish`, { method: 'PATCH' });
+
 const getReportData = (id) =>
   api(`/api/reports/${id}/data`);
 
@@ -107,18 +114,54 @@ const refreshReportUrl = (id, url, sheetName) =>
     body: JSON.stringify({ url, sheetName })
   });
 
-// Aliases so App.jsx import-as names resolve in standalone mode
-const apiLogin = login;
-const apiLogout = logout;
-const apiDeleteReport = deleteReport;
-const apiPublishReport = publishReport;
+// Proxy-fetch a URL via backend (bypasses browser CORS)
+// Works with OneDrive, Dropbox, Google Drive, SharePoint
+const fetchUrlViaProxy = (url, sheetName) =>
+  api('/api/fetch-url', {
+    method: 'POST',
+    body: JSON.stringify({ url, sheetName })
+  });
+
+// ── Public API (no auth — for mobile/shared link access) ──────────────────────
+const getPublishedReports = () => {
+  return fetch(`${BASE}/api/public/reports`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+};
+
+const getPublishedReportData = (id) => {
+  return fetch(`${BASE}/api/public/reports/${id}/data`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)));
+};
+
+// ── OAuth connection management ─────────────────────────────────────────────────
+const getOAuthStatus = () => api('/auth/status');
+
+const startMicrosoftAuth = () => api('/auth/microsoft/start');
+const startGoogleAuth = () => api('/auth/google/start');
+
+const disconnectOAuth = (provider) =>
+  api(`/auth/${provider}`, { method: 'DELETE' });
+
+const apiLogin=login; const apiLogout=logout; const apiDeleteReport=deleteReport;
+const apiPublishReport=publishReport; const apiUnpublishReport=unpublishReport;
+const fetchUrlViaProxy=(url,sheetName)=>api('/api/fetch-url',{method:'POST',body:JSON.stringify({url,sheetName})});
+const getOAuthStatus=()=>api('/auth/status');
+const startMicrosoftAuth=()=>api('/auth/microsoft/start');
+const startGoogleAuth=()=>api('/auth/google/start');
+const disconnectOAuth=(provider)=>api('/auth/'+provider,{method:'DELETE'});
+const getPublishedReports=()=>fetch(BASE+'/api/public/reports').then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)));
+const getPublishedReportData=(id)=>fetch(BASE+'/api/public/reports/'+id+'/data').then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)));
 
 </script>
-
 <script type="text/babel" data-presets="react">
 const { useState, useMemo, useRef, useEffect, useCallback } = React;
 const _ = window._;
-
+// API module — calls Railway backend. Stripped in standalone HTML (functions are global there).
+         deleteUser, getReports, createReport, deleteReport as apiDeleteReport,
+         publishReport as apiPublishReport, unpublishReport as apiUnpublishReport,
+         getReportData, fetchUrlViaProxy,
+         getOAuthStatus, startMicrosoftAuth, startGoogleAuth, disconnectOAuth,
+         getPublishedReports, getPublishedReportData } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -131,6 +174,18 @@ const T = {
   danger:   "#A32D2D", warning:  "#BA7517",
   tagR:"#534AB7", tagC:"#0F6E56", tagV:"#8B5A2B", tagF:"#185FA5", tagK:"#4A3060",
 };
+
+// ── useViewport hook — true if mobile (<700px) ────────────────────────────────
+function useViewport() {
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 700 : false);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 700);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return isMobile;
+}
+
 
 // ── Number formats ─────────────────────────────────────────────────────────────
 const NUM_FORMATS = [
@@ -268,7 +323,9 @@ function doAgg(rows,field,type){
 
 function runPivot(data,config,filters) {
   try {
-    const filtered=data.filter(row=>config.filters.every(f=>{const s=filters[f]||[];return !s.length||s.includes(String(row[f]||""));}));
+    // Filter by ALL active filters — configured slicers AND card filter clicks
+    const allFilterKeys=[...new Set([...config.filters,...Object.keys(filters).filter(k=>filters[k]&&filters[k].length)])];
+    const filtered=data.filter(row=>allFilterKeys.every(f=>{const s=filters[f]||[];return !s.length||s.includes(String(row[f]||""));}));
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>doAgg(sub,v.field,v.agg));
@@ -313,7 +370,7 @@ function exportExcel(result, config, numFmt) {
   rows.push(colHdr);
   // Data rows
   rowKeys.forEach(rk => {
-    const rkStr = rk.join(" ");
+    const rkStr = rk.join(" ");
     const row = [...rk];
     if (hasGroups) {
       colVals.forEach(cv => vals.forEach((_,vi) => row.push(((cells[rkStr]||{})[cv]||[])[vi]||0)));
@@ -339,18 +396,44 @@ function exportExcel(result, config, numFmt) {
 }
 
 function exportPDF(config) {
-  // Open a print-friendly version in a new window
-  const style = `<style>body{font-family:Arial,sans-serif;font-size:11px}table{border-collapse:collapse;width:100%}th{background:#5C2D1A;color:#F5EFE6;padding:7px 10px;text-align:right}th:first-child{text-align:left}td{padding:6px 10px;border-bottom:1px solid #D4BEA0;text-align:right}td:first-child{text-align:left;font-weight:600}tr:nth-child(even){background:#F5EEE4}tfoot td{font-weight:700;background:#EDE0CF}</style>`;
-  // Grab the pivot table element from the page and print it
-  const tableEl = document.querySelector("table");
-  if (!tableEl) { alert("No pivot table found to export."); return; }
+  const style = `<style>
+    body{font-family:Arial,sans-serif;font-size:11px;color:#2C1810;background:#fff}
+    h2{color:#5C2D1A;margin-bottom:4px;font-size:16px}
+    p{color:#7A5C4A;font-size:10px;margin-bottom:12px}
+    table{border-collapse:collapse;width:100%}
+    th{background:#5C2D1A;color:#F5EFE6;padding:7px 10px;text-align:right;font-size:10px}
+    th:first-child{text-align:left}
+    td{padding:6px 10px;border-bottom:1px solid #D4BEA0;text-align:right;font-size:10px}
+    td:first-child{text-align:left;font-weight:600}
+    tr:nth-child(even) td{background:#F5EEE4}
+    tfoot td{font-weight:700;background:#EDE0CF;border-top:2px solid #A07850}
+    @media print{body{margin:0}}
+  </style>`;
+  // Find the pivot table — look for the main report area table, not drill-down
+  // The pivot table is inside a div with overflowX:auto that is NOT inside a fixed modal
+  let tableEl = null;
+  const allTables = document.querySelectorAll("table");
+  for (const t of allTables) {
+    // Skip tables inside fixed-position modals (drill-down, settings)
+    let el = t.parentElement;
+    let inModal = false;
+    while (el) {
+      const pos = getComputedStyle(el).position;
+      if (pos === "fixed") { inModal = true; break; }
+      el = el.parentElement;
+    }
+    if (!inModal && t.querySelector("thead th")) { tableEl = t; break; }
+  }
+  if (!tableEl) { alert("No pivot table found. Make sure a report is loaded."); return; }
   const win = window.open("","_blank","width=900,height=700");
+  if (!win) { alert("Pop-up blocked. Please allow pop-ups for this site and try again."); return; }
   win.document.write("<html><head><title>"+config.name+"</title>"+style+"</head><body>");
-  win.document.write("<h2 style='color:#5C2D1A;margin-bottom:12px'>"+config.name+"</h2>");
+  win.document.write("<h2>"+config.name+"</h2>");
+  win.document.write("<p>Exported "+new Date().toLocaleString()+"</p>");
   win.document.write(tableEl.outerHTML);
   win.document.write("</body></html>");
   win.document.close();
-  setTimeout(()=>win.print(), 400);
+  setTimeout(()=>win.print(), 600);
 }
 
 // ── Drill-down column filter (Excel-style per-column filter in drill-down) ────
@@ -431,14 +514,15 @@ function DrillColFilter({field, data, active, onChange, numFields, activeSort, o
 }
 
 // ── Drill-down panel ──────────────────────────────────────────────────────────
-function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
+function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,onSaveHiddenCols}) {
   const [page,setPage]=useState(0);
   const [pageSize,setPageSize]=useState(25); // 25|50|100|"all"
-  const [hiddenCols,setHiddenCols]=useState(new Set());
+  const [hiddenCols,setHiddenCols]=useState(()=>new Set(savedHiddenCols||[]));
   const [showColPicker,setShowColPicker]=useState(false);
   const [colFilters,setColFilters]=useState({}); // {field: [selectedValues]}
   const [rowSort,setRowSort]=useState({}); // {field: dir} — only one active at a time
   const [colWidths,startColResize]=useColResize(130);
+  const [layoutSaved,setLayoutSaved]=useState(false); // flash confirmation after save
   const {rowKey,colVal,rFs,cF,metricLabel}=target;
   const baseRows=useMemo(()=>data.filter(row=>
     rFs.every((f,i)=>String(row[f]||"")===rowKey[i])&&
@@ -502,7 +586,22 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
               <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,width:240,maxHeight:320,overflowY:"auto",boxShadow:"0 8px 24px rgba(92,45,26,0.2)",zIndex:600}}>
                 <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:11,fontWeight:700,color:T.primary}}>Show / hide columns</span>
-                  <button onClick={()=>setHiddenCols(new Set())} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
+                  <div style={{display:"flex",gap:8}}>
+                    {onSaveHiddenCols&&(
+                      layoutSaved
+                        ? <span style={{fontSize:10,color:T.success,fontWeight:700,display:"flex",alignItems:"center",gap:3}}>
+                            ✓ Layout saved
+                          </span>
+                        : <button onClick={()=>{
+                            onSaveHiddenCols([...hiddenCols]);
+                            setLayoutSaved(true);
+                            setTimeout(()=>setLayoutSaved(false),2500);
+                          }} style={{fontSize:10,color:T.primary,background:"none",border:"1px solid "+T.primary,borderRadius:4,padding:"2px 8px",cursor:"pointer",fontWeight:700}}>
+                            Save layout
+                          </button>
+                    )}
+                    <button onClick={()=>setHiddenCols(new Set())} style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>Show all</button>
+                  </div>
                 </div>
                 {fields.map(f=>(
                   <label key={f} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",cursor:"pointer",fontSize:12,color:T.text,background:hiddenCols.has(f)?"rgba(92,45,26,0.04)":undefined}}>
@@ -516,15 +615,20 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
           </div>
           <button onClick={onClose} style={{width:28,height:28,borderRadius:6,border:"none",background:"rgba(255,255,255,0.15)",cursor:"pointer",fontSize:16,color:T.textLt,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
-        {/* Hint + clear column filters */}
-        <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border,flexShrink:0,display:"flex",alignItems:"center",gap:10}}>
-          <span>Columns in original Excel order · Click ⋏ on column headers to filter/sort · Scroll right to see all</span>
-          {hasColFilters&&<button onClick={()=>setColFilters({})} style={{fontSize:10,color:T.danger,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",flexShrink:0}}>Clear column filters</button>}
+        {/* Hint + status bar */}
+        <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:layoutSaved?"rgba(45,106,79,0.1)":T.bgStat,borderBottom:"0.5px solid "+T.border,flexShrink:0,display:"flex",alignItems:"center",gap:10,transition:"background 0.3s"}}>
+          {layoutSaved
+            ? <span style={{color:T.success,fontWeight:600,display:"flex",alignItems:"center",gap:5}}>
+                ✓ Column layout saved — this will be remembered when the report is saved
+              </span>
+            : <span>Columns in original Excel order · Click ⋏ on headers to filter/sort · Scroll right to see all</span>
+          }
+          {!layoutSaved&&hasColFilters&&<button onClick={()=>setColFilters({})} style={{fontSize:10,color:T.danger,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",flexShrink:0}}>Clear column filters</button>}
         </div>
         {/* Table — full horizontal scroll, all columns, original order */}
         <div style={{overflowX:"auto",flex:1,overflowY:"auto"}}>
           <table style={{borderCollapse:"collapse",fontSize:12,tableLayout:"fixed",minWidth:"100%"}}>
-            <thead><tr style={{background:T.bgTableH}}>
+            <thead style={{position:"sticky",top:0,zIndex:5}}><tr style={{background:T.bgTableH}}>
               {visibleCols.map(f=>{
                 const fActive=(colFilters[f]||[]).length>0;
                 return(
@@ -608,36 +712,124 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt}) {
 }
 
 // ── Quick filter cards ─────────────────────────────────────────────────────────
-function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt}) {
-  const opts=useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
-  const active=activeFilters||[];
-  const allActive=active.length===0;
-  const cardStyle=(on)=>({
-    flexShrink:0,padding:"10px 16px",borderRadius:8,textAlign:"left",cursor:"pointer",minWidth:110,
-    border:on?"2px solid "+T.primary:"1px solid "+T.border,
-    background:on?T.primary:T.bgCard,
-    transition:"all 0.15s",
-  });
-  return(
-    <div style={{marginBottom:16}}>
-      <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:8}}>{field}</div>
-      <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
-        <button onClick={()=>onFilter([])} style={cardStyle(allActive)}>
-          <div style={{fontSize:10,color:allActive?T.textLt:T.textMd,marginBottom:3}}>All</div>
-          <div style={{fontSize:15,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
-            {fmtNum(doAgg(data,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
+function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,numFields,cardAgg}) {
+  // Determine if this card field is numeric (KPI mode) or dimension (filter mode)
+  const isNumericField = numFields && numFields.has(field);
+  // For numeric fields, use the card's own configured agg (sum/count/avg/min/max)
+  // For dimension fields, use primaryVal metric broken down by dimension values
+  const displayVal = isNumericField
+    ? {field, agg: cardAgg||"sum"}  // use card-specific agg
+    : primaryVal;                    // use primary metric per dimension value
+
+  const opts = useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
+  const tooManyOpts = opts.length > 20;
+  const defaultMode = (isNumericField || tooManyOpts) ? "summary" : "breakdown";
+  const [mode, setMode] = useState(defaultMode);
+  const active = activeFilters || [];
+  const allActive = active.length === 0;
+
+  const cardBase = {
+    flexShrink:0, padding:"10px 14px", borderRadius:8, textAlign:"left",
+    cursor:"pointer", border:"1px solid "+T.border, transition:"all 0.15s",
+  };
+  const cardOn  = {...cardBase, background:T.primary, border:"2px solid "+T.primary,
+    boxShadow:"0 2px 8px rgba(92,45,26,0.25)", transform:"translateY(-1px)"};
+  const cardOff = {...cardBase, background:T.bgCard};
+  const cardKpi = {...cardBase, background:T.bgStat, cursor:"default"};
+
+  // ── NUMERIC FIELD: single KPI tile, no click filter ──────────────────────────
+  if (isNumericField) {
+    const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
+    return (
+      <div>
+        <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+          {field} <span style={{fontWeight:400,fontSize:9}}>Metric total</span>
+        </div>
+        <div style={cardKpi}>
+          <div style={{fontSize:9,color:T.textMd,marginBottom:2}}>{displayVal.agg} of {displayVal.field}</div>
+          <div style={{fontSize:17,fontWeight:700,color:T.numColor}}>{total}</div>
+          <div style={{fontSize:9,color:T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DIMENSION FIELD: summary mode (single card) ───────────────────────────────
+  if (mode === "summary") {
+    const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
+    return (
+      <div>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+          <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
+          {!tooManyOpts && (
+            <button onClick={()=>setMode("breakdown")}
+              style={{fontSize:9,color:T.primary,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+              Expand ▸
+            </button>
+          )}
+          {tooManyOpts && <span style={{fontSize:9,color:T.textMd,fontStyle:"italic"}}>{opts.length} values</span>}
+        </div>
+        <button onClick={allActive ? undefined : ()=>onFilter([])}
+          style={{...(allActive?cardKpi:cardOn), cursor:allActive?"default":"pointer", width:"100%", textAlign:"left"}}>
+          {!allActive && (
+            <div style={{fontSize:9,color:"rgba(245,239,230,0.75)",marginBottom:3,fontStyle:"italic"}}>
+              {active.join(", ")} · click to clear
+            </div>
+          )}
+          <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.7)",marginBottom:2}}>
+            {displayVal.agg} of {displayVal.field}
+          </div>
+          <div style={{fontSize:17,fontWeight:700,color:allActive?T.numColor:T.textLt}}>{total}</div>
+          <div style={{fontSize:9,color:allActive?T.textMd:"rgba(245,239,230,0.6)",marginTop:2}}>
+            {data.length.toLocaleString()} rows
           </div>
         </button>
+      </div>
+    );
+  }
+
+  // ── DIMENSION FIELD: breakdown mode (one card per unique value) ───────────────
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+        <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
+        <button onClick={()=>setMode("summary")}
+          style={{fontSize:9,color:T.textMd,background:"none",border:"1px solid "+T.border,borderRadius:3,padding:"1px 6px",cursor:"pointer"}}>
+          ◂ Collapse
+        </button>
+        {!allActive && (
+          <button onClick={()=>onFilter([])}
+            style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+            Clear
+          </button>
+        )}
+      </div>
+      <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4}}>
+        {/* All button */}
+        <button onClick={()=>onFilter([])} style={allActive?{...cardOn,minWidth:80}:{...cardOff,minWidth:80}}>
+          <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>All</div>
+          <div style={{fontSize:14,fontWeight:700,color:allActive?T.textLt:T.numColor}}>
+            {fmtNum(doAgg(data,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+          </div>
+          <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
+        </button>
+        {/* One card per unique value */}
         {opts.map(val=>{
-          const on=active.includes(val);
-          const rows=data.filter(r=>String(r[field]||"")===val);
-          return(
-            <button key={val} onClick={()=>on?onFilter(active.filter(x=>x!==val)):onFilter([...active,val])} style={cardStyle(on)}>
-              <div style={{fontSize:10,color:on?T.textLt:T.textMd,marginBottom:3,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{val||"(blank)"}</div>
-              <div style={{fontSize:15,fontWeight:700,color:on?T.textLt:T.numColor}}>
-                {fmtNum(doAgg(rows,primaryVal.field,primaryVal.agg),primaryVal.agg,primaryVal.field,numFmt)}
+          const on = active.includes(val);
+          const subset = data.filter(r=>String(r[field]||"")===val);
+          return (
+            <button key={val} onClick={()=>on?onFilter([]):onFilter([val])}
+              style={on?{...cardOn,minWidth:80}:{...cardOff,minWidth:80}}>
+              <div style={{fontSize:9,color:on?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2,
+                maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {val||"(blank)"}
               </div>
-              <div style={{fontSize:10,color:on?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{rows.length.toLocaleString()} rows</div>
+              <div style={{fontSize:14,fontWeight:700,color:on?T.textLt:T.numColor}}>
+                {fmtNum(doAgg(subset,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
+              </div>
+              <div style={{fontSize:9,color:on?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>
+                {subset.length.toLocaleString()} rows
+              </div>
             </button>
           );
         })}
@@ -645,8 +837,6 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt})
     </div>
   );
 }
-
-// ── Slicer — Excel-style with sort A-Z / Z-A / numeric ───────────────────────
 function Slicer({field,active,onChange,data}) {
   const [open,setOpen]=useState(false);
   const [search,setSearch]=useState("");
@@ -698,7 +888,7 @@ function Slicer({field,active,onChange,data}) {
         <span style={{fontSize:9,opacity:0.5}}>{open?"▲":"▼"}</span>
       </button>
       {open&&(
-        <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:300,background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,minWidth:260,maxWidth:340,boxShadow:"0 8px 28px rgba(92,45,26,0.2)",overflow:"hidden"}}>
+        <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:9999,background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,minWidth:260,maxWidth:340,boxShadow:"0 8px 28px rgba(92,45,26,0.2)",overflow:"hidden"}}>
           {/* Sort row — like Excel filter */}
           <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,background:T.bgStat}}>
             <div style={{fontSize:10,color:T.textMd,fontWeight:600,marginBottom:5}}>Sort</div>
@@ -774,10 +964,164 @@ const ResizeHandle=({onMouseDown})=>(
 );
 
 // ── Pivot table ────────────────────────────────────────────────────────────────
-function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilters,onPivotFilter,pivotSort,onPivotSort}) {
+// ── Chart View — visualisations of pivot result ─────────────────────────────────
+function ChartView({result, numFmt, chartType, onChartTypeChange}) {
+  if (!result || result.error) return null;
+  const { cells, vals, rowKeys, colVals, grandTotals } = result;
+  const hasGroups = colVals && colVals.length > 0;
+  const nV = vals.length;
+
+  if (!rowKeys.length || !nV) {
+    return (
+      <div style={{padding:"40px 20px",textAlign:"center",color:T.textMd,background:T.bgCard,
+        borderRadius:10,border:"1px solid "+T.border}}>
+        Configure rows and values in the builder to see charts.
+      </div>
+    );
+  }
+
+  // Use Recharts from window if available, else show notice
+  const R = window.Recharts;
+  if (!R) {
+    return (
+      <div style={{padding:"30px 20px",textAlign:"center",color:T.textMd,background:T.bgCard,
+        borderRadius:10,border:"1px dashed "+T.border}}>
+        Charts library is loading… please wait a moment and try again.
+      </div>
+    );
+  }
+
+  // Build chart-friendly data: one entry per row, with one numeric value per col group + metric
+  const chartData = rowKeys.map(rk => {
+    const rkStr = rk.join("\0");
+    const cellRow = cells[rkStr] || {};
+    const out = { name: rk.join(" · ") };
+    if (hasGroups) {
+      colVals.forEach(cv => {
+        vals.forEach((v, vi) => {
+          const key = (nV > 1) ? `${cv} — ${v.field}` : cv;
+          out[key] = ((cellRow[cv] || [])[vi]) || 0;
+        });
+      });
+    } else {
+      vals.forEach((v, vi) => {
+        out[v.field] = ((cellRow["__total__"] || [])[vi]) || 0;
+      });
+    }
+    return out;
+  });
+
+  // Series keys (one per coloured bar/line/slice)
+  let series = [];
+  if (hasGroups) {
+    colVals.forEach(cv => {
+      vals.forEach(v => {
+        series.push((nV > 1) ? `${cv} — ${v.field}` : cv);
+      });
+    });
+  } else {
+    vals.forEach(v => series.push(v.field));
+  }
+
+  const palette = [T.primary, T.accent, "#7B5C3E", "#A07850", "#5C2D1A", "#C8922A", "#8B6B4A", "#3D1F11"];
+
+  const fmt = (n) => fmtNum(n, "sum", "", numFmt).replace("₹","");
+
+  // ── Chart renderers ───────────────────────────────────────────────────────────
+  const containerStyle = { width: "100%", height: 460 };
+
+  let chartEl = null;
+  if (chartType === "bar") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.BarChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Bar key={s} dataKey={s} fill={palette[i%palette.length]}/>)}
+        </R.BarChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "line") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.LineChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Line key={s} type="monotone" dataKey={s} stroke={palette[i%palette.length]} strokeWidth={2} dot={{r:3}}/>)}
+        </R.LineChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "pie") {
+    // Pie: only first series (sum across rows)
+    const pieData = chartData.map(d => ({ name: d.name, value: d[series[0]] || 0 }));
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.PieChart>
+          <R.Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={140}
+            label={(e)=>`${e.name}: ${fmtNum(e.value,"sum","",numFmt)}`}>
+            {pieData.map((_,i)=><R.Cell key={i} fill={palette[i%palette.length]}/>)}
+          </R.Pie>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}/>
+          <R.Legend wrapperStyle={{fontSize:11}}/>
+        </R.PieChart>
+      </R.ResponsiveContainer>
+    );
+  } else if (chartType === "area") {
+    chartEl = (
+      <R.ResponsiveContainer {...containerStyle}>
+        <R.AreaChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
+          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
+          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
+          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
+          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
+            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
+          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
+          {series.map((s,i)=><R.Area key={s} type="monotone" dataKey={s} stackId="1" stroke={palette[i%palette.length]} fill={palette[i%palette.length]} fillOpacity={0.6}/>)}
+        </R.AreaChart>
+      </R.ResponsiveContainer>
+    );
+  }
+
+  return (
+    <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,padding:"18px 16px",
+      boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+        <div style={{fontWeight:700,fontSize:13,color:T.primary}}>Chart visualisation</div>
+        <div style={{display:"flex",gap:4,background:T.bgStat,borderRadius:7,padding:3,border:"0.5px solid "+T.border}}>
+          {[
+            {k:"bar",   l:"📊 Bar"},
+            {k:"line",  l:"📈 Line"},
+            {k:"area",  l:"📉 Area"},
+            {k:"pie",   l:"🥧 Pie"},
+          ].map(b=>(
+            <button key={b.k} onClick={()=>onChartTypeChange(b.k)}
+              style={{padding:"4px 12px",border:"none",borderRadius:5,
+                background:chartType===b.k?T.primary:"none",
+                color:chartType===b.k?T.textLt:T.textMd,
+                cursor:"pointer",fontSize:11,fontWeight:600}}>
+              {b.l}
+            </button>
+          ))}
+        </div>
+      </div>
+      {chartEl}
+    </div>
+  );
+}
+
+function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,colExcluded,onColFilter,pivotFilters,onPivotFilter,pivotSort,onPivotSort}) {
   // ── ALL hooks must come before any conditional return (Rules of Hooks) ──────
   const [dragOverCol,setDragOverCol]=useState(null);
   const [colWidths,startColResize]=useColResize(120);
+  const [valSort,setValSort]=useState(null); // {field,dir:"asc"|"desc"} — sort rows by metric
 
   // Derive vals safely — null when result not ready
   const vals = result&&!result.error ? result.vals : [];
@@ -828,8 +1172,26 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
 
   const {cells,colTotals,grandTotals,rFs,cF}=result;
   const nV=vals.length;
-  // Use external colOrder if provided (for column group drag-reorder), else default
-  const orderedColVals=colOrder&&colOrder.length===colVals.length?colOrder:colVals;
+  // Apply value-column sort: reorder rows by a metric descending/ascending
+  const sortedRowKeys=valSort
+    ? (()=>{
+        const vi=vals.findIndex(v=>v.field===valSort.field);
+        if (vi===-1) return rowKeys;
+        return [...rowKeys].sort((a,b)=>{
+          const av=((cells[a.join(" ")]||{})["__total__"]||[])[vi]||0;
+          const bv=((cells[b.join(" ")]||{})["__total__"]||[])[vi]||0;
+          return valSort.dir==="asc"?av-bv:bv-av;
+        });
+      })()
+    : rowKeys;
+
+  // Use colFilter (filtered col values from Report), respecting drag reorder
+  const orderedColVals=(()=>{
+    const base = colFilter&&colFilter.length>=0 ? colFilter : colVals;
+    if (!colOrder||!colOrder.length) return base;
+    const ordered = colOrder.filter(v=>base.includes(v));
+    return ordered.length===base.length ? ordered : base;
+  })();
   const totalCells=rowKeys.length*Math.max(orderedColVals.length,1)*nV;
   if (totalCells>50000) return(
     <div style={{padding:"14px",background:"rgba(200,146,42,0.08)",border:"1px solid rgba(200,146,42,0.35)",borderRadius:8,fontSize:13,color:T.warning}}>
@@ -845,7 +1207,24 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
     :orderedVals.map((v,_i)=>                              ({key:"__total__",vi:origIdx(v),isTotal:false}));
   const effectiveVals=hasGroups?vals:orderedVals;
   const getCell=(s,col)=>((cells[s]||{})[col.key]||effectiveVals.map(()=>0))[col.vi]||0;
-  const getGrand=col=>(col.key==="__total__"?grandTotals:(colTotals[col.key]||effectiveVals.map(()=>0)))[col.vi]||0;
+  // Grand totals from VISIBLE rows only (plain computation — no hook needed here)
+  const visibleGrandTotals=sortedRowKeys.map
+    ? effectiveVals.map((_,vi)=>sortedRowKeys.reduce((sum,rk)=>{
+        const rkStr=rk.join(" ");
+        return sum+(((cells[rkStr]||{})["__total__"]||[])[vi]||0);
+      },0))
+    : grandTotals;
+  const visibleColTotals=(()=>{
+    const out={};
+    colVals.forEach(cv=>{
+      out[cv]=effectiveVals.map((_,vi)=>sortedRowKeys.reduce((sum,rk)=>{
+        const rkStr=rk.join(" ");
+        return sum+(((cells[rkStr]||{})[cv]||[])[vi]||0);
+      },0));
+    });
+    return out;
+  })();
+  const getGrand=col=>(col.key==="__total__"?visibleGrandTotals:(visibleColTotals[col.key]||effectiveVals.map(()=>0)))[col.vi]||0;
   const lBorder=i=>i===0||flatCols[i-1].key!==flatCols[i].key?"1px solid "+T.borderDk:"none";
   const thStyle={padding:"10px 14px",fontWeight:700,fontSize:12,color:T.textLt,whiteSpace:"nowrap",background:T.bgHeader,borderBottom:"1px solid "+T.borderHd};
   // Column group drag handlers (only active when onColReorder is provided)
@@ -858,12 +1237,12 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
     if(from&&from!==cv)onColReorder(from,cv);
   };
   return(
-    <div style={{overflowX:"auto",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
+    <div style={{overflowX:"auto",overflowY:"auto",maxHeight:"70vh",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
       <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border}}>
         {onDrillDown?"Click any cell to drill down  ·  ":""}{onColReorder?"Drag column headers to reorder":""}
       </div>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
-        <thead>
+        <thead style={{position:"sticky",top:0,zIndex:5}}>
           {hasGroups&&(
             <tr>
               {rFs.map((rf,ri)=>(
@@ -942,9 +1321,20 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
                     cursor:isDraggable?"grab":"default",
                     outline:dragOverCol===v.field?"2px dashed "+T.accent:"none",
                     position:"relative",width:colWidths["val_"+v.field]||undefined,minWidth:70}}>
-                  {isDraggable&&<span style={{opacity:0.4,fontSize:9,marginRight:3}}>{"⋮"}</span>}
-                  {v.field}
-                  <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:4}}>
+                    {isDraggable&&<span style={{opacity:0.4,fontSize:9}}>{"⋮"}</span>}
+                    <div style={{textAlign:"right"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
+                        {v.field}
+                        <button onClick={e=>{e.stopPropagation();setValSort(vs=>vs&&vs.field===v.field?(vs.dir==="asc"?{field:v.field,dir:"desc"}:null):{field:v.field,dir:"desc"});}}
+                          title={"Sort by "+v.field}
+                          style={{background:"none",border:"none",cursor:"pointer",color:"rgba(245,239,230,0.7)",fontSize:11,padding:"0 2px",lineHeight:1,flexShrink:0}}>
+                          {valSort&&valSort.field===v.field?(valSort.dir==="desc"?"↓":"↑"):"⇅"}
+                        </button>
+                      </div>
+                      <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
+                    </div>
+                  </div>
                   <ResizeHandle onMouseDown={e=>startColResize("val_"+v.field,e)}/>
                 </th>
               );
@@ -952,7 +1342,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,pivotFilter
           </tr>
         </thead>
         <tbody>
-          {rowKeys.map((rk,ri)=>{
+          {sortedRowKeys.map((rk,ri)=>{
             const rkStr=rk.join("\0");
             return(
               <tr key={rkStr} style={{background:ri%2===0?T.bgCard:T.bgAlt}}>
@@ -1014,37 +1404,66 @@ function FormatSelector({value,onChange}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange}) {
   const [filters,setFilters]=useState({});
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
   const [colOrder,setColOrder]=useState(null);
+  const [excludedColVals,setExcludedColVals]=useState(()=>new Set(config.colExcluded||[])); // persist to config
+  const [showColFilter,setShowColFilter]=useState(false);
+  const colFilterRef=useRef(null);
   const [adHocFields,setAdHocFields]=useState([]); // extra filters user adds in view mode
+  const [drillHiddenCols,setDrillHiddenCols]=useState(()=>config.drillHiddenCols||[]); // init from saved config
   const [pivotFilters,setPivotFilters]=useState({}); // {rowFieldIdx: [selectedValues]}
   const [pivotSort,setPivotSort]=useState(null); // {fieldIdx, dir}
+  const [viewMode,setViewMode]=useState("table"); // "table" | "chart"
+  const [chartType,setChartType]=useState("bar"); // bar | line | area | pie
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
   const adHocRef=useRef(null);
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
-  useEffect(()=>{if(result&&!result.error&&result.colVals)setColOrder(null);},[config]);
+  useEffect(()=>{if(result&&!result.error&&result.colVals){setColOrder(null);setExcludedColVals(new Set(config.colExcluded||[]));}},[config.columns,config.rows]);
   const setF=(f,v)=>setFilters(p=>({...p,[f]:v}));
   const hasActive=Object.values(filters).some(v=>v&&v.length);
-  const slicerFields=(config.filters||[]).filter(f=>!(cardFields||[]).includes(f));
+  const cardFieldNames=useMemo(()=>(cardFields||[]).map(x=>typeof x==="string"?x:x.field),[cardFields]);
+  const slicerFields=(config.filters||[]).filter(f=>!cardFieldNames.includes(f));
   const primaryVal=(config.values||[])[0]||{field:"",agg:"sum"};
   // All dimension fields available for ad-hoc filtering
   const dimFields=useMemo(()=>fields.filter(f=>!numFields.has(f)),[fields,numFields]);
   // Ad-hoc fields not already in configured slicers or card fields
-  const addableFields=dimFields.filter(f=>!slicerFields.includes(f)&&!(cardFields||[]).includes(f)&&!adHocFields.includes(f));
+  const addableFields=dimFields.filter(f=>!slicerFields.includes(f)&&!cardFieldNames.includes(f)&&!adHocFields.includes(f));
   useEffect(()=>{
     if (!showAdHocPicker) return;
     const h=e=>{if(adHocRef.current&&!adHocRef.current.contains(e.target))setShowAdHocPicker(false);};
     const t=setTimeout(()=>document.addEventListener("click",h),10);
     return()=>{clearTimeout(t);document.removeEventListener("click",h);};
   },[showAdHocPicker]);
+  // Filtered colVals for PivotTable (excludes hidden column values)
+  // When excludedColVals changes, lift to parent so it gets saved with report
+  const updateExcluded=(fn)=>{
+    setExcludedColVals(prev=>{
+      const next=fn instanceof Set?fn:fn(prev);
+      onColExcludedChange&&onColExcludedChange([...next]);
+      return next;
+    });
+  };
+
+  const filteredColVals=useMemo(()=>{
+    if (!result||result.error||!result.colVals) return [];
+    return result.colVals.filter(cv=>!excludedColVals.has(cv));
+  },[result,excludedColVals]);
+
+  // Close col-filter dropdown when clicking outside
+  useEffect(()=>{
+    if (!showColFilter) return;
+    const h=e=>{if(colFilterRef.current&&!colFilterRef.current.contains(e.target))setShowColFilter(false);};
+    const t=setTimeout(()=>document.addEventListener('click',h),10);
+    return()=>{clearTimeout(t);document.removeEventListener('click',h);};
+  },[showColFilter]);
+
   function handleColReorder(from,to) {
-    // Two modes: (1) column field set - reorder colVals; (2) no column field - reorder value metric names
     const hasColField=result&&result.colVals&&result.colVals.length>0;
     const base=hasColField
-      ?(colOrder||[...result.colVals])
+      ?(colOrder||[...filteredColVals])
       :(colOrder||(config.values||[]).map(v=>v.field));
     const fi=base.indexOf(from),ti=base.indexOf(to);
     if(fi===-1||ti===-1)return;
@@ -1054,8 +1473,86 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
 
   return(
     <div>
-      {/* Format selector + export row */}
+      {/* Tab strip — multi-section reports */}
+      {tabs&&tabs.length>0&&(
+        <div style={{display:"flex",gap:0,marginBottom:14,borderBottom:"2px solid "+T.border,overflowX:"auto",alignItems:"flex-end"}}>
+          {tabs.map((t,i)=>(
+            <div key={t.id||i} style={{position:"relative",display:"flex",alignItems:"center"}}>
+              <button onClick={()=>onTabChange&&onTabChange(i)}
+                style={{padding:"8px 16px",border:"none",
+                  background:i===activeTabIdx?T.bgCard:"none",
+                  color:i===activeTabIdx?T.primary:T.textMd,
+                  fontWeight:i===activeTabIdx?700:500,
+                  fontSize:13,cursor:"pointer",
+                  borderTopLeftRadius:8,borderTopRightRadius:8,
+                  borderBottom:i===activeTabIdx?"2px solid "+T.primary:"none",
+                  marginBottom:i===activeTabIdx?-2:0,whiteSpace:"nowrap"}}>
+                {t.name||"Untitled"}
+              </button>
+              {onTabsChange&&tabs.length>1&&i===activeTabIdx&&(
+                <button onClick={(e)=>{
+                    e.stopPropagation();
+                    if(confirm("Delete tab \""+(t.name||"Untitled")+"\"?")){
+                      const nt=tabs.filter((_,idx)=>idx!==i);
+                      onTabsChange(nt);
+                      if(activeTabIdx>=nt.length)onTabChange(Math.max(0,nt.length-1));
+                    }
+                  }}
+                  title="Delete tab"
+                  style={{position:"absolute",top:6,right:4,background:"none",border:"none",
+                    cursor:"pointer",fontSize:11,color:T.textMd,padding:"0 4px",lineHeight:1}}>
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          {onTabsChange&&(
+            <button onClick={()=>{
+                const name=prompt("Name for new tab?","Tab "+(tabs.length+1));
+                if(!name)return;
+                const newTab={id:"t"+Date.now(),name,config:{...config},cardFields:[...(cardFields||[])]};
+                onTabsChange([...tabs,newTab]);
+                onTabChange&&onTabChange(tabs.length);
+              }}
+              title="Add new tab"
+              style={{padding:"8px 12px",border:"1px dashed "+T.border,background:"none",
+                color:T.textMd,fontSize:12,cursor:"pointer",borderRadius:6,marginLeft:6,marginBottom:2}}>
+              + Tab
+            </button>
+          )}
+          {onTabsChange&&tabs.length>0&&(
+            <button onClick={()=>{
+                const cur=tabs[activeTabIdx];
+                const newName=prompt("Rename tab:",cur.name||"");
+                if(newName===null||!newName.trim())return;
+                const nt=tabs.map((t,i)=>i===activeTabIdx?{...t,name:newName.trim()}:t);
+                onTabsChange(nt);
+              }}
+              title="Rename current tab"
+              style={{padding:"5px 10px",border:"none",background:"none",color:T.textMd,fontSize:11,cursor:"pointer",marginLeft:4,marginBottom:6}}>
+              ✏ Rename
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Format selector + view toggle + export row */}
       <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+        {/* Table / Chart toggle */}
+        <div style={{display:"flex",gap:3,background:T.bgStat,borderRadius:7,padding:3,border:"0.5px solid "+T.border}}>
+          <button onClick={()=>setViewMode("table")}
+            style={{padding:"5px 14px",border:"none",borderRadius:5,
+              background:viewMode==="table"?T.primary:"none",color:viewMode==="table"?T.textLt:T.textMd,
+              cursor:"pointer",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+            <span>▦</span> Table
+          </button>
+          <button onClick={()=>setViewMode("chart")}
+            style={{padding:"5px 14px",border:"none",borderRadius:5,
+              background:viewMode==="chart"?T.primary:"none",color:viewMode==="chart"?T.textLt:T.textMd,
+              cursor:"pointer",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>
+            <span>📊</span> Chart
+          </button>
+        </div>
         <FormatSelector value={numFmt} onChange={setNumFmt}/>
         {hasActive&&<button onClick={()=>setFilters({})} style={{fontSize:12,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear all filters</button>}
         {showExport&&result&&!result.error&&(
@@ -1089,15 +1586,35 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
         </div>
       )}
 
-      {/* Card filters */}
-      {(cardFields||[]).map(f=>(
-        <QuickFilterCards key={f} field={f} data={data} activeFilters={filters[f]||[]}
-          onFilter={v=>setF(f,v)} primaryVal={primaryVal} numFmt={numFmt}/>
-      ))}
+      {/* Card filter container — all card groups in one horizontal panel */}
+      {(cardFields||[]).length>0&&(
+        <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:"12px 16px",marginBottom:14,
+          overflowX:"auto"}}>
+          <div style={{display:"flex",gap:24,minWidth:0,alignItems:"flex-start"}}>
+            {(cardFields||[]).map(cf=>{
+              const f=typeof cf==="string"?cf:cf.field;
+              const cardAgg=typeof cf==="string"?"sum":cf.agg;
+              // Cross-filter: show data filtered by all OTHER active card/slicer filters
+              const otherFilters=Object.fromEntries(Object.entries(filters).filter(([k])=>k!==f));
+              const otherKeys=[...new Set([...config.filters,...Object.keys(otherFilters).filter(k=>otherFilters[k]&&otherFilters[k].length)])];
+              const cardData=otherKeys.length?data.filter(row=>otherKeys.every(ff=>{const s=otherFilters[ff]||[];return !s.length||s.includes(String(row[ff]||""));})):data;
+              // Override primaryVal with card's own agg for numeric fields
+              const cardPrimary=numFields&&numFields.has(f)?{field:f,agg:cardAgg}:primaryVal;
+              return(
+                <div key={f} style={{flexShrink:0,minWidth:140}}>
+                  <QuickFilterCards field={f} data={cardData} activeFilters={filters[f]||[]}
+                    onFilter={v=>setF(f,v)} numFmt={numFmt} numFields={numFields}
+                    primaryVal={cardPrimary} cardAgg={cardAgg}/>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-      {/* Slicers — configured + ad-hoc */}
-      {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0)&&(
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+      {/* Slicers + column value filter — in one unified filter bar */}
+      {(slicerFields.length>0||adHocFields.length>0||addableFields.length>0||(result&&result.cF))&&(
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap",position:"relative",zIndex:200}}>
           <span style={{fontSize:12,color:T.textMd,fontWeight:600}}>Filters:</span>
           {slicerFields.map(f=><Slicer key={f} field={f} active={filters[f]||[]} onChange={v=>setF(f,v)} data={data}/>)}
           {adHocFields.map(f=>(
@@ -1129,22 +1646,87 @@ function Report({config,data,fields,numFields,showExport,cardFields}) {
               )}
             </div>
           )}
+          {/* Column value filter chip — looks like a Slicer but controls which col groups show */}
+          {result&&result.cF&&result.colVals&&result.colVals.length>0&&(
+            <div ref={colFilterRef} style={{position:"relative"}}>
+              <button onClick={()=>setShowColFilter(v=>!v)}
+                style={{display:"flex",alignItems:"center",gap:4,padding:"5px 10px",
+                  border:"1px solid "+(excludedColVals.size>0?T.primary:T.borderDk),
+                  borderRadius:6,background:excludedColVals.size>0?"rgba(92,45,26,0.08)":"none",
+                  cursor:"pointer",fontSize:12,
+                  color:excludedColVals.size>0?T.primary:T.text,fontWeight:excludedColVals.size>0?600:400}}>
+                {result.cF} {excludedColVals.size>0?"("+excludedColVals.size+" hidden)":""}
+                <span style={{fontSize:9,color:T.textMd,marginLeft:2}}>▾</span>
+              </button>
+              {showColFilter&&(
+                <div style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:9999,
+                  background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,
+                  minWidth:240,boxShadow:"0 6px 24px rgba(92,45,26,0.2)",overflow:"hidden"}}>
+                  <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,
+                    display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:T.primary}}>{result.cF} columns</span>
+                    <div style={{display:"flex",gap:10}}>
+                      <button onClick={()=>updateExcluded(new Set())}
+                        style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>All</button>
+                      <button onClick={()=>updateExcluded(new Set(result.colVals))}
+                        style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>None</button>
+                    </div>
+                  </div>
+                  <div style={{maxHeight:250,overflowY:"auto"}}>
+                    {result.colVals.map(cv=>{
+                      const hidden=excludedColVals.has(cv);
+                      const label=(cv===""||cv===null||cv===undefined)?"(blank)":String(cv);
+                      return(
+                        <label key={String(cv)} style={{display:"flex",alignItems:"center",gap:8,
+                          padding:"6px 12px",cursor:"pointer",
+                          background:!hidden?"none":"rgba(92,45,26,0.04)"}}>
+                          <input type="checkbox" checked={!hidden}
+                            onChange={()=>updateExcluded(prev=>{
+                              const n=new Set(prev);
+                              n.has(cv)?n.delete(cv):n.add(cv);
+                              return n;
+                            })}
+                            style={{accentColor:T.primary,width:13,height:13,cursor:"pointer"}}/>
+                          <span style={{fontSize:12,flex:1,color:hidden?T.textMd:T.text}}>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {excludedColVals.size>0&&(
+                    <div style={{padding:"6px 12px",borderTop:"0.5px solid "+T.border,fontSize:10,color:T.textMd}}>
+                      {excludedColVals.size} hidden · Total column shows all data
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {hasActive&&<button onClick={()=>setFilters({})} style={{fontSize:11,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear all</button>}
         </div>
       )}
 
-      <PivotTable result={result} numFmt={numFmt}
-        colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
-        onColReorder={result&&!result.error&&
-          ((result.colVals&&result.colVals.length>1)||((!result.cF)&&result.vals&&result.vals.length>1))
-          ?handleColReorder:undefined}
-        pivotFilters={Object.keys(pivotFilters).length?pivotFilters:null}
-        onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
-        pivotSort={pivotSort}
-        onPivotSort={setPivotSort}
-        onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
 
-      {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt} onClose={()=>setDrill(null)}/>}
+      {viewMode==="table"
+        ? <PivotTable result={result} numFmt={numFmt}
+            colOrder={colOrder&&result&&result.colVals?colOrder:undefined}
+            onColReorder={result&&!result.error&&
+              ((result.colVals&&result.colVals.length>1)||((!result.cF)&&result.vals&&result.vals.length>1))
+              ?handleColReorder:undefined}
+            colExcluded={excludedColVals}
+            colFilter={result&&result.colVals?filteredColVals:undefined}
+            onColFilter={result&&result.cF&&result.colVals&&result.colVals.length>0?()=>setShowColFilter(v=>!v):undefined}
+            pivotFilters={Object.keys(pivotFilters).length?pivotFilters:null}
+            onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
+            pivotSort={pivotSort}
+            onPivotSort={setPivotSort}
+            onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
+        : <ChartView result={result} numFmt={numFmt} chartType={chartType} onChartTypeChange={setChartType}/>
+      }
+
+      {drill&&<DrillDown data={data} target={drill} fields={fields} numFields={numFields} numFmt={numFmt}
+        savedHiddenCols={drillHiddenCols}
+        onSaveHiddenCols={cols=>{setDrillHiddenCols(cols);onDrillHiddenColsChange&&onDrillHiddenColsChange(cols);}}
+        onClose={()=>setDrill(null)}/>}
     </div>
   );
 }
@@ -1234,19 +1816,109 @@ function AppHeader({role, onLogout, children}) {
     <div style={{position:"sticky",top:0,zIndex:50,background:T.bgHeader,borderBottom:"2px solid "+T.borderHd,
       padding:"0 20px",display:"flex",alignItems:"center",gap:12,height:52,
       boxShadow:"0 2px 12px rgba(44,24,16,0.3)"}}>
-      <span style={{fontWeight:700,fontSize:15,color:T.textLt,letterSpacing:"-0.3px"}}>
+      <span style={{fontWeight:700,fontSize:isMobile?14:15,color:T.textLt,letterSpacing:"-0.3px"}}>
         <span style={{color:T.accent}}>Report</span>Hub
       </span>
-      <span style={{color:"rgba(245,239,230,0.3)"}}>|</span>
-      <span style={{fontSize:11,color:T.textLt,background:"rgba(255,255,255,0.12)",padding:"2px 10px",borderRadius:4,fontWeight:500}}>{role}</span>
+      {!isMobile&&<span style={{color:"rgba(245,239,230,0.3)"}}>|</span>}
+      {!isMobile&&<span style={{fontSize:11,color:T.textLt,background:"rgba(255,255,255,0.12)",padding:"2px 10px",borderRadius:4,fontWeight:500}}>{role}</span>}
       <div style={{flex:1}}/>{children}
-      <button onClick={onLogout} style={{padding:"5px 14px",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt}}>Logout</button>
+      <button onClick={onLogout} style={{padding:isMobile?"5px 10px":"5px 14px",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt}}>{isMobile?"Out":"Logout"}</button>
     </div>
   );
 }
 
 // ── Upload Tab ─────────────────────────────────────────────────────────────────
-function UploadTab({libs, onDataLoaded, existingConfig}) {
+// ── OAuth Connection Panel ──────────────────────────────────────────────────────
+function OAuthPanel() {
+  const [status,setStatus]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState("");
+
+  useEffect(()=>{
+    getOAuthStatus().then(setStatus).catch(()=>{});
+  },[]);
+
+  async function connect(provider) {
+    setLoading(true); setMsg("");
+    try {
+      const {url}=await(provider==="microsoft"?startMicrosoftAuth():startGoogleAuth());
+      const popup=window.open(url,"oauth_"+provider,"width=600,height=700,left=200,top=80");
+      if (!popup){setMsg("Pop-up blocked — allow pop-ups for this site, then try again.");setLoading(false);return;}
+      const done=await new Promise(resolve=>{
+        const h=e=>{if(e.data&&(e.data.type==="oauth-success"||e.data.type==="oauth-error")){window.removeEventListener("message",h);resolve(e.data);}};
+        window.addEventListener("message",h);
+        const t=setInterval(()=>{if(popup.closed){clearInterval(t);window.removeEventListener("message",h);resolve({type:"closed"});}},500);
+      });
+      const s=await getOAuthStatus();
+      setStatus(s);
+      if(done.type==="oauth-success"||s[provider]?.connected)setMsg("✅ "+(provider==="microsoft"?"Microsoft":"Google")+" account connected!");
+      else if(done.type==="oauth-error")setMsg("❌ Failed: "+done.error);
+      else setMsg("Window closed — try again if connection didn't complete.");
+    }catch(e){setMsg("Error: "+e.message);}
+    finally{setLoading(false);}
+  }
+
+  async function disconnect(provider){
+    if(!confirm("Disconnect "+provider+" account?"))return;
+    await disconnectOAuth(provider);
+    const s=await getOAuthStatus();setStatus(s);setMsg(provider+" disconnected.");
+  }
+
+  if (!status) return null;
+
+  const providers=[
+    {key:"microsoft",label:"Microsoft OneDrive / SharePoint",icon:"🪟"},
+    {key:"google",label:"Google Drive / Sheets",icon:"🔵"},
+  ];
+
+  return(
+    <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden",marginBottom:14}}>
+      <div style={{padding:"10px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:14}}>🔐</span>
+        <span style={{fontWeight:700,fontSize:13,color:T.primary}}>Cloud storage accounts</span>
+        <span style={{fontSize:11,color:T.textMd}}>Connect once · access files without sharing</span>
+      </div>
+      {msg&&<div style={{padding:"8px 16px",fontSize:12,
+        color:msg.startsWith("✅")?T.success:msg.startsWith("❌")?"#A32D2D":T.textMd,
+        background:msg.startsWith("✅")?"rgba(45,106,79,0.08)":msg.startsWith("❌")?"rgba(163,45,45,0.07)":T.bgStat,
+        borderBottom:"0.5px solid "+T.border}}>{msg}</div>}
+      <div style={{display:"flex",flexWrap:"wrap"}}>
+        {providers.map((p,i)=>{
+          const info=status[p.key]||{};
+          return(
+            <div key={p.key} style={{flex:"1 1 200px",padding:"12px 16px",borderRight:i===0?"0.5px solid "+T.border:"none"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:18}}>{p.icon}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,fontSize:12,color:T.text}}>{p.label}</div>
+                  <div style={{fontSize:10,marginTop:2,color:info.connected?T.success:T.textMd}}>
+                    {info.connected?("✓ Connected"+(info.connectedAt?" · "+new Date(info.connectedAt).toLocaleDateString():""))
+                      :info.configured?"Not connected":"⚠ Not configured in Railway"}
+                  </div>
+                </div>
+                {info.connected
+                  ?<button onClick={()=>disconnect(p.key)} disabled={loading}
+                    style={{padding:"4px 10px",background:"none",border:"1px solid rgba(163,45,45,0.4)",borderRadius:5,cursor:"pointer",fontSize:11,color:"#A32D2D",flexShrink:0}}>
+                    Disconnect
+                  </button>
+                  :info.configured
+                    ?<button onClick={()=>connect(p.key)} disabled={loading}
+                      style={{padding:"4px 12px",background:T.primary,color:T.textLt,border:"none",borderRadius:5,cursor:loading?"not-allowed":"pointer",fontSize:11,fontWeight:600,flexShrink:0,opacity:loading?0.6:1}}>
+                      Connect
+                    </button>
+                    :<span style={{fontSize:10,color:"#A32D2D",flexShrink:0}}>Setup needed</span>
+                }
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -1263,6 +1935,10 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
   const [lastRefresh,setLastRefresh]=useState(null);
   const fileRef=useRef(null);
   const libsReady=!!(libs.XLSX&&libs.Papa);
+  const [showRefreshPicker,setShowRefreshPicker]=useState(false);
+  const [pendingRefreshData,setPendingRefreshData]=useState(null);
+  const [selectedRefreshIds,setSelectedRefreshIds]=useState(new Set());
+  const [pendingLinkSave,setPendingLinkSave]=useState(null); // {url,sheet} to save after Load
 
   function applySchema(rows,fields,name) {
     if (!rows.length){setParseError("No data rows found after cleaning.");setPhase("error");return;}
@@ -1318,19 +1994,110 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
     }catch(e){setParseError("Read error: "+e.message);setPhase("error");}
   }
 
-  async function handleUrl() {
-    if (!refreshUrl.trim()){setParseError("Enter a URL first.");setPhase("error");return;}
+  // Detect Microsoft / SharePoint URLs
+  const isMsUrl = url => url.includes("sharepoint.com") || url.includes("onedrive.live.com") ||
+    url.includes("1drv.ms") || url.includes("office.com") || url.includes("microsoftonline.com");
+
+  // Try to parse an ArrayBuffer as an Excel file, return rows + sheetNames or null
+  function tryParseXlsx(buf, sheet) {
+    try {
+      const wb = libs.XLSX.read(buf, { type: "array", cellDates: true });
+      const wsName = sheet && wb.SheetNames.includes(sheet) ? sheet : wb.SheetNames[0];
+      const ws = wb.Sheets[wsName];
+      if (!ws) return null;
+      if (ws["!ref"]) {
+        const r = libs.XLSX.utils.decode_range(ws["!ref"]);
+        if (r.e.r > 100000) { r.e.r = 100000; ws["!ref"] = libs.XLSX.utils.encode_range(r); }
+      }
+      return { rows: libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true }), sheetNames: wb.SheetNames };
+    } catch(e) { return null; }
+  }
+
+  // Strategy A: Browser fetch with credentials (session cookies)
+  async function fetchBrowser(url, sheet) {
+    const resp = await fetch(url, { credentials: "include", redirect: "follow" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const ct = resp.headers.get("content-type") || "";
+    if (ct.includes("text/html")) throw new Error("got-html");
+    const buf = await resp.arrayBuffer();
+    const result = tryParseXlsx(buf, sheet);
+    if (!result) throw new Error("parse-failed");
+    return result;
+  }
+
+  async function fetchFromUrl(url, sheet) {
+    // Strategy 1: Browser fetch with session cookies — works for org accounts already signed in
+    try {
+      const result = await fetchBrowser(url, sheet);
+      console.log("Browser fetch succeeded:", result.rows.length, "rows");
+      return result;
+    } catch(e) {
+      console.log("Browser fetch:", e.message);
+    }
+    // Strategy 2: Backend proxy (OneDrive Sharing API + download=1) — for public links
+    return await fetchUrlViaProxy(url, sheet||undefined);
+  }
+
+  async function handleUrl(urlOverride, sheetOverride) {
+    const url = (urlOverride||refreshUrl).trim();
+    const sheet = sheetOverride||refreshSheet;
+    if (!url){setParseError("Enter a URL first.");setPhase("error");return;}
     setPhase("parsing");setParseError("");
     try{
-      const resp=await fetch(refreshUrl.trim());
-      if (!resp.ok) throw new Error("HTTP "+resp.status);
-      const buf=await resp.arrayBuffer();
-      const wb=libs.XLSX.read(buf,{type:"array",cellDates:true});
-      setWorkbook(wb);setLastRefresh(new Date());
-      if (refreshSheet&&wb.SheetNames.includes(refreshSheet)){loadSheet(wb,refreshSheet);}
-      else if (wb.SheetNames.length===1){loadSheet(wb,wb.SheetNames[0]);}
-      else{setSheetNames(wb.SheetNames);setPhase("sheet");}
-    }catch(e){setParseError("URL fetch failed: "+e.message+". Ensure it is a direct download link with CORS enabled.");setPhase("error");}
+      const result = await fetchFromUrl(url, sheet);
+      setLastRefresh(new Date());
+      const urlName = url.split("/").pop().split("?")[0]||"Imported";
+      // If multiple sheets and no sheet was specified, show picker
+      if (!sheet && result.sheetNames && result.sheetNames.length > 1) {
+        setSheetNames(result.sheetNames);
+        // Store the fetched rows keyed by sheet name for immediate use after pick
+        // We re-fetch with the chosen sheet name via handleUrl(url, chosenSheet)
+        setPhase("url-sheet"); // new phase: sheet picker for URL-loaded files
+        setParseError(url);    // reuse parseError to store the URL
+        return;
+      }
+      processRaw(result.rows, urlName);
+    }catch(e){
+      const msg = e.message||"Unknown error";
+      // If it looks like an auth/login problem AND it is a Microsoft URL → offer popup login
+      const isAuthErr = msg.includes("401")||msg.includes("403")||
+        msg.includes("sign-in")||msg.includes("preview page")||msg.includes("login")||
+        msg.includes("got-html")||msg.includes("Got a login")||msg.includes("needs_auth");
+      if (isAuthErr) {
+        setParseError("Sign-in required. Use the Connect accounts panel above to connect your Microsoft or Google account, then retry.");
+        setPhase("error");
+        return;
+      }
+      setParseError(msg + (msg.includes("404") ? " — check the link is correct." : ""));
+      setPhase("error");
+    }
+  }
+
+  // Popup login: open the OneDrive/SharePoint URL in a popup so the user can sign in,
+  // then retry the browser fetch after the popup closes
+  async function handlePopupLogin() {
+    const url = parseError; // URL stored here when phase === "login-required"
+    const sheet = refreshSheet;
+    const popup = window.open(url, "ms_login", "width=900,height=650,left=200,top=100");
+    if (!popup) { setParseError("Pop-up was blocked. Please allow pop-ups for this site and try again."); setPhase("error"); return; }
+    setPhase("popup-waiting");
+    // Poll until popup closes
+    await new Promise(resolve => {
+      const t = setInterval(() => { if (popup.closed) { clearInterval(t); resolve(); } }, 500);
+    });
+    // Popup closed — retry browser fetch (user should now have session cookies)
+    setPhase("parsing");
+    setParseError("");
+    try {
+      const result = await fetchBrowser(url, sheet);
+      setLastRefresh(new Date());
+      processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
+    } catch(e) {
+      setParseError("Still could not access the file after sign-in. " +
+        "If the file requires organisational permissions that ReportHub does not have, " +
+        "please download it and use the file upload button instead.");
+      setPhase("error");
+    }
   }
 
   const onDrop=useCallback(e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);},[libs]);
@@ -1341,13 +2108,18 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
     const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
     const fields=schema.map(s=>s.field); // preserve original chronological order
     const name=parseStats&&parseStats.name?parseStats.name:"Report";
-    const config=existingConfig?{...existingConfig,name}:autoConfig(fields,numFields,name);
+    let baseConfig=existingConfig?{...existingConfig,name}:autoConfig(fields,numFields,name);
+    if (refreshUrl.trim()) {
+      const newLink={url:refreshUrl.trim(),sheet:refreshSheet||"",label:name,lastRefreshed:Date.now()};
+      const existing=baseConfig.sourceLinks||[];
+      baseConfig={...baseConfig,sourceLinks:[...existing.filter(x=>x.url!==newLink.url),newLink]};
+    }
     const rows=allRows.map(r=>{
       const out={...r};
-      fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,\u20B9]/g,""));out[f]=isNaN(n)?0:n;}}});
+      fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,₹]/g,""));out[f]=isNaN(n)?0:n;}}});
       return out;
     });
-    onDataLoaded({rows,fields,numFields,config});
+    onDataLoaded({rows,fields,numFields,config:baseConfig});
   }
 
   const fmtSize=b=>b>1048576?(b/1048576).toFixed(1)+" MB":(b/1024).toFixed(1)+" KB";
@@ -1357,6 +2129,7 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
     <div style={{padding:20,maxWidth:960,margin:"0 auto"}}>
 
       {(phase==="drop"||phase==="error")&&(<>
+          <OAuthPanel/>
         <div onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop}
           onClick={()=>libsReady&&fileRef.current.click()}
           style={{border:"2px dashed "+(dragOver?T.primary:T.border),borderRadius:14,padding:"52px 24px",textAlign:"center",
@@ -1378,24 +2151,62 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
           </div>
         )}
 
-        <div style={{marginTop:18,padding:"16px 18px",background:T.bgCard,borderRadius:10,border:"1px solid "+T.border}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{fontSize:16}}>🔗</span>
-            <span style={{fontWeight:700,fontSize:13,color:T.text}}>Auto-refresh from URL</span>
-            {lastRefresh&&<span style={{fontSize:11,color:T.textMd,marginLeft:"auto"}}>Last refreshed: {lastRefresh.toLocaleTimeString()}</span>}
+        {/* ── Saved links — one-click refresh ──────────────────────────── */}
+        {savedLinks&&savedLinks.length>0&&(
+          <div style={{marginTop:18,background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden"}}>
+            <div style={{padding:"10px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border,display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>⚡</span>
+              <span style={{fontWeight:700,fontSize:13,color:T.primary}}>Saved links — quick refresh</span>
+              <span style={{fontSize:11,color:T.textMd}}>One click to pull latest data</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:0}}>
+              {savedLinks.map((lk,idx)=>(
+                <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:idx<savedLinks.length-1?"0.5px solid "+T.border:"none",background:idx%2===0?T.bgCard:T.bgStat}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:12,color:T.text,marginBottom:2}}>{lk.label}</div>
+                    <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
+                    {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
+                    {lk.lastRefreshed&&<div style={{fontSize:10,color:T.success}}>Last: {new Date(lk.lastRefreshed).toLocaleString()}</div>}
+                  </div>
+                  <button onClick={()=>onQuickRefresh&&onQuickRefresh(lk)}
+                    style={{padding:"5px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,flexShrink:0,whiteSpace:"nowrap"}}>
+                    ↻ Refresh
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.6}}>
-            Paste a direct download URL (SharePoint public share, Dropbox, OneDrive, or any CORS-enabled server). Your pivot layout is preserved on refresh.
+        )}
+
+        {/* ── New URL / add link ─────────────────────────────────────────── */}
+        <div style={{marginTop:14,padding:"16px 18px",background:T.bgCard,borderRadius:10,border:"1px solid "+T.border}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <span style={{fontSize:14}}>🔗</span>
+            <span style={{fontWeight:700,fontSize:13,color:T.text}}>{savedLinks&&savedLinks.length>0?"Add another URL":"Load from URL"}</span>
+            {lastRefresh&&<span style={{fontSize:11,color:T.textMd,marginLeft:"auto"}}>Last: {lastRefresh.toLocaleTimeString()}</span>}
+          </div>
+          <div style={{fontSize:12,color:T.textMd,marginBottom:10,lineHeight:1.55}}>
+            Paste a link from <strong>OneDrive</strong>, <strong>SharePoint</strong>, <strong>Google Drive</strong>, or <strong>Dropbox</strong>.
+            The app first tries your browser session (works if you are signed into OneDrive in this browser),
+            then falls back to a server-side download for publicly shared files.
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)} placeholder="https://your-server.com/report.xlsx"
+            <input value={refreshUrl} onChange={e=>setRefreshUrl(e.target.value)}
+              placeholder="Paste share link here..."
               style={{...inp,flex:"2 1 300px"}}/>
-            <input value={refreshSheet} onChange={e=>setRefreshSheet(e.target.value)} placeholder="Sheet name (optional)"
-              style={{...inp,flex:"1 1 150px"}}/>
-            <button onClick={handleUrl} disabled={!refreshUrl.trim()||!libsReady}
-              style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:refreshUrl.trim()&&libsReady?"pointer":"not-allowed",fontSize:13,fontWeight:600,opacity:refreshUrl.trim()&&libsReady?1:0.5,whiteSpace:"nowrap"}}>
-              Refresh Now
+            <input value={refreshSheet} onChange={e=>setRefreshSheet(e.target.value)}
+              placeholder="Sheet name (optional)"
+              style={{...inp,flex:"1 1 140px"}}/>
+            <button onClick={()=>handleUrl()} disabled={!refreshUrl.trim()||!libsReady}
+              style={{padding:"8px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,
+                cursor:refreshUrl.trim()&&libsReady?"pointer":"not-allowed",fontSize:13,fontWeight:600,
+                opacity:refreshUrl.trim()&&libsReady?1:0.5,whiteSpace:"nowrap"}}>
+              Load
             </button>
+          </div>
+          <div style={{fontSize:11,color:T.textMd,marginTop:8,lineHeight:1.5}}>
+            <strong>Internal OneDrive/SharePoint (org account):</strong> Open the file in a browser tab while signed in, then use the file upload button above instead —
+            the app will pick it up locally without sign-in issues.
           </div>
         </div>
 
@@ -1424,6 +2235,56 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
         </div>
       )}
 
+      {/* ── Sign-in required — popup login flow ──────────────────────────── */}
+      {phase==="login-required"&&(
+        <div style={{marginTop:14,background:T.bgCard,borderRadius:10,border:"1px solid "+T.accent,overflow:"hidden"}}>
+          <div style={{padding:"14px 18px",background:"rgba(200,146,42,0.1)",borderBottom:"0.5px solid "+T.accent,display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>🔐</span>
+            <div>
+              <div style={{fontWeight:700,fontSize:13,color:T.text}}>Sign-in required to access this file</div>
+              <div style={{fontSize:11,color:T.textMd,marginTop:2}}>The file is on OneDrive or SharePoint and requires your organisational account.</div>
+            </div>
+          </div>
+          <div style={{padding:"16px 18px"}}>
+            <div style={{fontSize:12,color:T.textMd,marginBottom:14,lineHeight:1.65}}>
+              Click the button below. A <strong>Microsoft sign-in window</strong> will open in a popup.
+              Sign into your account there, then close that window — ReportHub will automatically
+              retry downloading the file using your session.
+            </div>
+            <div style={{background:T.bgStat,borderRadius:8,padding:"10px 14px",fontSize:11,color:T.textMd,marginBottom:14,border:"0.5px solid "+T.border}}>
+              <strong>URL:</strong> <span style={{wordBreak:"break-all",fontSize:10}}>{parseError}</span>
+            </div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              <button onClick={handlePopupLogin}
+                style={{padding:"9px 22px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,
+                  cursor:"pointer",fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+                <span>🪟</span> Open sign-in window
+              </button>
+              <button onClick={()=>{setPhase("drop");setParseError("");}}
+                style={{padding:"9px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>
+                Cancel
+              </button>
+            </div>
+            <div style={{fontSize:11,color:T.textMd,marginTop:12,lineHeight:1.5}}>
+              <strong>Tip:</strong> After signing in once, future refreshes will work automatically
+              as long as you remain signed in.
+              If the popup is blocked by your browser, click the address bar icon to allow pop-ups for this site.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {phase==="popup-waiting"&&(
+        <div style={{textAlign:"center",padding:"60px 24px"}}>
+          <div style={{fontSize:40,marginBottom:14}}>🪟</div>
+          <div style={{fontWeight:700,fontSize:15,marginBottom:8,color:T.text}}>Waiting for sign-in...</div>
+          <div style={{fontSize:13,color:T.textMd,lineHeight:1.6}}>
+            Please complete sign-in in the popup window.<br/>
+            Once you close it, the file will be downloaded automatically.
+          </div>
+        </div>
+      )}
+
       {phase==="sheet"&&(
         <div>
           <div style={{fontWeight:700,fontSize:16,color:T.text,marginBottom:4}}>Select a sheet</div>
@@ -1443,6 +2304,50 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
         </div>
       )}
 
+      {/* Sheet picker for URL-loaded files (no local workbook available) */}
+      {phase==="url-sheet"&&(
+        <div style={{background:T.bgCard,borderRadius:10,border:"1px solid "+T.border,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",background:T.bgTableH,borderBottom:"0.5px solid "+T.border}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:2}}>Select a sheet</div>
+            <div style={{fontSize:12,color:T.textMd}}>
+              This workbook has {sheetNames.length} sheets. Which one should be loaded?
+            </div>
+          </div>
+          <div style={{padding:"12px 16px",display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10}}>
+            {sheetNames.map((name,i)=>(
+              <button key={name}
+                onClick={async()=>{
+                  const url=parseError;
+                  setRefreshSheet(name);
+                  setPhase("parsing"); setParseError("");
+                  try{
+                    const result=await fetchFromUrl(url,name);
+                    setLastRefresh(new Date());
+                    processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
+                  }catch(e){setParseError(e.message);setPhase("error");}
+                }}
+                style={{padding:"14px 16px",textAlign:"left",background:T.bgCard,border:"1px solid "+T.border,
+                  borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",gap:12,color:T.text}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=T.primary}
+                onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                <span style={{width:34,height:34,background:T.bgStat,borderRadius:8,display:"flex",
+                  alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>📄</span>
+                <div>
+                  <div style={{fontWeight:600,fontSize:13}}>{name}</div>
+                  <div style={{fontSize:11,color:T.textMd}}>Sheet {i+1}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div style={{padding:"10px 16px",borderTop:"0.5px solid "+T.border}}>
+            <button onClick={()=>{setPhase("drop");setParseError("");setSheetNames([]);}}
+              style={{fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+              Different URL
+            </button>
+          </div>
+        </div>
+      )}
+
       {phase==="preview"&&(
         <div>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12,marginBottom:20}}>
@@ -1453,11 +2358,116 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
                 · Column order preserved from source file
               </div>
             </div>
-            <div style={{display:"flex",gap:10}}>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
               <button onClick={()=>{setPhase("drop");setAllRows([]);setSchema([]);}}
                 style={{padding:"8px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>Different file</button>
+              {onDataRefresh&&savedReports&&savedReports.length>0&&(
+                <button onClick={()=>{
+                  // Build the data payload, then show report picker
+                  const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
+                  const fields=schema.map(s=>s.field);
+                  const rows=allRows.map(r=>{
+                    const out={...r};
+                    fields.forEach(f=>{if(numFields.has(f)){const v=r[f];if(typeof v!=="number"){const n=parseFloat(String(v||"").replace(/[$,₹]/g,""));out[f]=isNaN(n)?0:n;}}});
+                    return out;
+                  });
+                  setPendingRefreshData({rows,fields,numFields});
+                  setShowRefreshPicker(true);
+                }}
+                style={{padding:"8px 20px",background:"none",border:"2px solid "+T.primary,borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600,color:T.primary}}>
+                  ↻ Update existing report
+                </button>
+              )}
+              {/* Report picker modal — multi-select checkboxes */}
+              {showRefreshPicker&&pendingRefreshData&&(
+                <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <div style={{background:T.bgCard,borderRadius:12,width:"min(560px,94vw)",maxHeight:"82vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+                    {/* Header */}
+                    <div style={{padding:"16px 20px",background:T.bgHeader,borderRadius:"12px 12px 0 0",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:15,color:T.textLt}}>Select reports to update</div>
+                        <div style={{fontSize:11,color:"rgba(245,239,230,0.65)",marginTop:2}}>
+                          New data: {pendingRefreshData.rows.length.toLocaleString()} rows · {pendingRefreshData.fields.length} columns
+                        </div>
+                      </div>
+                      <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);setSelectedRefreshIds(new Set());}}
+                        style={{border:"none",background:"rgba(255,255,255,0.15)",color:T.textLt,borderRadius:6,width:28,height:28,cursor:"pointer",fontSize:16}}>×</button>
+                    </div>
+                    {/* Info bar + select all */}
+                    <div style={{padding:"8px 16px",borderBottom:"0.5px solid "+T.border,fontSize:12,color:T.textMd,background:T.bgStat,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <span>Tick the reports whose data rows should be replaced. Builder layout stays unchanged.</span>
+                      <button onClick={()=>setSelectedRefreshIds(prev=>prev.size===savedReports.length?new Set():new Set(savedReports.map(r=>r.id)))}
+                        style={{fontSize:11,color:T.primary,background:"none",border:"none",cursor:"pointer",fontWeight:600,flexShrink:0,marginLeft:12}}>
+                        {selectedRefreshIds.size===savedReports.length?"Deselect all":"Select all"}
+                      </button>
+                    </div>
+                    {/* Report list with checkboxes */}
+                    <div style={{overflowY:"auto",padding:"10px 14px",display:"flex",flexDirection:"column",gap:6}}>
+                      {savedReports.map(r=>{
+                        const checked=selectedRefreshIds.has(r.id);
+                        return(
+                          <label key={r.id} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 14px",
+                            background:checked?"rgba(92,45,26,0.06)":T.bgCard,
+                            border:"1px solid "+(checked?T.primary:T.border),borderRadius:8,cursor:"pointer"}}>
+                            <input type="checkbox" checked={checked}
+                              onChange={()=>setSelectedRefreshIds(prev=>{
+                                const n=new Set(prev);
+                                n.has(r.id)?n.delete(r.id):n.add(r.id);
+                                return n;
+                              })}
+                              style={{width:16,height:16,accentColor:T.primary,flexShrink:0,cursor:"pointer"}}/>
+                            <div style={{width:34,height:34,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,
+                              display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>
+                              {r.isPublished?"📤":"📊"}
+                            </div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontWeight:600,fontSize:13,color:T.text,display:"flex",alignItems:"center",gap:8}}>
+                                {r.name}
+                                {r.isPublished&&<span style={{background:T.primary,color:T.textLt,borderRadius:8,padding:"1px 7px",fontSize:10,fontWeight:600}}>Published</span>}
+                              </div>
+                              <div style={{fontSize:11,color:T.textMd,marginTop:2}}>
+                                {r.rows.toLocaleString()} rows · Rows: {r.config.rows.join(", ")||"—"} · Values: {r.config.values.map(v=>v.field).join(", ")||"—"}
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {/* Footer with action button */}
+                    <div style={{padding:"12px 16px",borderTop:"0.5px solid "+T.border,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                      <span style={{fontSize:12,color:T.textMd}}>
+                        {selectedRefreshIds.size===0?"No reports selected":selectedRefreshIds.size+" report"+(selectedRefreshIds.size>1?"s":"")+" selected"}
+                      </span>
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={()=>{setShowRefreshPicker(false);setPendingRefreshData(null);setSelectedRefreshIds(new Set());}}
+                          style={{padding:"7px 16px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:13,color:T.text}}>
+                          Cancel
+                        </button>
+                        <button disabled={selectedRefreshIds.size===0}
+                          onClick={async()=>{
+                            setShowRefreshPicker(false);
+                            const ids=[...selectedRefreshIds];
+                            setSelectedRefreshIds(new Set());
+                            // Update all selected reports sequentially
+                            for (const id of ids) {
+                              await onDataRefresh(pendingRefreshData,id);
+                            }
+                            setPendingRefreshData(null);
+                          }}
+                          style={{padding:"7px 18px",background:selectedRefreshIds.size>0?T.primary:"rgba(92,45,26,0.3)",
+                            color:T.textLt,border:"none",borderRadius:6,cursor:selectedRefreshIds.size>0?"pointer":"not-allowed",
+                            fontSize:13,fontWeight:700,opacity:selectedRefreshIds.size>0?1:0.6}}>
+                          ↻ Update {selectedRefreshIds.size>1?selectedRefreshIds.size+" reports":"report"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <button onClick={confirmLoad}
-                style={{padding:"8px 20px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600}}>Load into builder</button>
+                style={{padding:"8px 20px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:600}}>
+                {existingConfig?"Load fresh (reset builder)":"Load into builder"}
+              </button>
             </div>
           </div>
 
@@ -1531,7 +2541,7 @@ function UploadTab({libs, onDataLoaded, existingConfig}) {
 }
 
 // ── Admin View ─────────────────────────────────────────────────────────────────
-function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onDeleteReport,onLoadReportData,onReloadReports,currentUser}) {
+function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishReport,onUnpublishReport,onDeleteReport,onLoadReportData,onReloadReports,currentUser}) {
   const libs=useLibs();
   const [dataset,setDataset]=useState(null);
   const [config,setConfig]=useState(null);
@@ -1541,6 +2551,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [toast,setToast]=useState("");
   const [showSettings,setShowSettings]=useState(false);
   const [apiLoading,setApiLoading]=useState(false);
+  const [activeReportId,setActiveReportId]=useState(null); // id of report currently open in builder
+  const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
+  const [activeTabIdx,setActiveTabIdx]=useState(0); // active tab in multi-tab report
 
   const effectiveNumFields=useMemo(()=>{
     if (!dataset) return new Set();
@@ -1549,16 +2562,43 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     return s;
   },[dataset,typeOverrides]);
 
-  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setTab("builder");}
+  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setTab("builder");}
+  async function onDataRefresh(ds, targetId) {
+    // targetId = which saved report to update data for
+    const r = savedReports.find(x=>x.id===targetId);
+    if (!r) { showToast("Report not found."); return; }
+    setApiLoading(true);
+    try {
+      // Delete old rows and save new ones — reuse report's existing config
+      await onDeleteReport(targetId);
+      const nfArr = [...(ds.numFields instanceof Set ? ds.numFields : new Set(ds.numFields||[]))];
+      const id = await onSaveReport({
+        name: r.name,
+        dataset: {...ds, numFields: ds.numFields},
+        config: r.config,
+        cardFields: r.cardFields||[],
+      });
+      // If this report was the one open in builder, update local state too
+      if (activeReportId === targetId || !activeReportId) {
+        setDataset(prev=>({...prev,...ds}));
+        setConfig(r.config);
+        setCardFields(r.cardFields||[]);
+        setActiveReportId(id);
+      }
+      showToast("'"+r.name+"' data updated! Builder layout preserved.");
+      setTab("builder");
+    } catch(e) { showToast("Update failed: "+e.message); }
+    finally { setApiLoading(false); }
+  }
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
     if (!r) return;
     setApiLoading(true);
     try {
-      // Load rows from API (cached after first load)
       const data=await onLoadReportData(id);
       const ds={rows:data.rows,fields:data.fields,numFields:data.numFields};
       setDataset(ds);setConfig(r.config);setCardFields(r.cardFields||[]);setTypeOverrides({});
+      setActiveReportId(id);
       setTab("builder");
     } catch(e){showToast("Load error: "+e.message);}
     finally{setApiLoading(false);}
@@ -1566,10 +2606,24 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
   async function doSave() {
     if (!dataset||!config){showToast("Nothing to save yet.");return;}
+    // If this dataset came from an existing saved report, offer overwrite or new
+    if (activeReportId) {
+      setSaveDialog(true);
+    } else {
+      await commitSave(false);
+    }
+  }
+  async function commitSave(overwrite) {
+    setSaveDialog(false);
     setApiLoading(true);
     try{
-      await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
-      showToast("Report saved!");
+      if (overwrite&&activeReportId) {
+        // Delete old then save with same name (Railway API doesn't have PATCH for full data)
+        await onDeleteReport(activeReportId);
+      }
+      const id=await onSaveReport({name:config.name,dataset:{...dataset,numFields:effectiveNumFields},config,cardFields});
+      setActiveReportId(id);
+      showToast(overwrite?"Report updated!":"Report saved as new!");
     }catch(e){showToast("Save failed: "+e.message);}
     finally{setApiLoading(false);}
   }
@@ -1577,8 +2631,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     setApiLoading(true);
     try{
       await onPublishReport(id);
-      showToast("Report published to users!");
+      showToast("Report published!");
     }catch(e){showToast("Publish failed: "+e.message);}
+    finally{setApiLoading(false);}
+  }
+  async function doUnpublish(id) {
+    setApiLoading(true);
+    try{
+      await onUnpublishReport(id);
+      showToast("Report unpublished.");
+    }catch(e){showToast("Unpublish failed: "+e.message);}
     finally{setApiLoading(false);}
   }
 
@@ -1588,7 +2650,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     if (curNum) setConfig(c=>({...c,values:c.values.filter(v=>v.field!==field)}));
   }
 
-  function toggleCard(field){setCardFields(cf=>cf.includes(field)?cf.filter(f=>f!==field):[...cf,field]);}
+  function toggleCard(field){setCardFields(cf=>cf.some(x=>x.field===field)?cf.filter(x=>x.field!==field):[...cf,{field,agg:"sum"}]);}
+  function setCardAgg(field,agg){setCardFields(cf=>cf.map(x=>x.field===field?{...x,agg}:x));}
 
   function toggleField(zone,field) {
     setConfig(c=>{
@@ -1628,7 +2691,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const fieldStatus=useMemo(()=>{
     if (!dataset||!config) return {};
     const z={};
-    dataset.fields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.includes(f)};});
+    dataset.fields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.some(x=>x.field===f)};});
     return z;
   },[dataset,config,cardFields]);
 
@@ -1658,7 +2721,33 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         {TABS.map(([t,l,d])=>tabBtn(t,l,d))}
       </div>
 
-      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} existingConfig={config}/>}
+      {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
+        existingConfig={config} savedReports={savedReports}
+        savedLinks={savedReports.flatMap(r=>(r.config&&r.config.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
+        onQuickRefresh={async(lk)=>{
+          // Quick refresh: fetch data + update the linked report directly
+          setApiLoading(true);
+          try{
+            // Try browser first then backend proxy
+            let result;
+            try{
+              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
+              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true});result={rows,sheetNames:wb.SheetNames};}}}
+            }catch(e){console.log("browser fetch failed:",e.message);}
+            if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined);}
+            // Build numFields from the target report's config
+            const r=savedReports.find(x=>x.id===lk.reportId);
+            const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(Object.keys(result.rows[0]||{}).filter(k=>!isNaN(parseFloat(result.rows[0][k])))))]:[...Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")];
+            await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
+            // Update lastRefreshed in config
+            if(r){
+              const newLinks=(r.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:Date.now()}:x);
+              setConfig(cfg=>({...cfg,sourceLinks:newLinks}));
+            }
+            showToast("Refreshed: "+lk.label);
+          }catch(e){showToast("Refresh failed: "+e.message);}
+          finally{setApiLoading(false);}
+        }}/>}
 
       {tab==="builder"&&dataset&&config&&(
         <div style={{padding:20,display:"grid",gridTemplateColumns:"290px 1fr",gap:20,alignItems:"start"}}>
@@ -1713,8 +2802,13 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 onRemove={f=>removeFrom("filters",f)} onReorder={(a,b)=>reorderInZone("filters",a,b)}
                 emptyMsg="Press F on any field"/>
               <ZoneBox label="Card Filters (K) — Power BI style" color={T.tagK} zone="cards" fields={cardFields}
-                onRemove={f=>setCardFields(cf=>cf.filter(x=>x!==f))} onReorder={(a,b)=>setCardFields(cf=>{const fi=cf.indexOf(a),ti=cf.indexOf(b);if(fi===-1||ti===-1)return cf;const arr=[...cf];arr.splice(fi,1);arr.splice(ti,0,a);return arr;})}
-                emptyMsg="Press K on a dimension field"/>
+                isValues onAggChange={setCardAgg}
+                onRemove={f=>setCardFields(cf=>cf.filter(x=>x.field!==f))}
+                onReorder={(a,b)=>setCardFields(cf=>{
+                  const fi=cf.findIndex(x=>x.field===a),ti=cf.findIndex(x=>x.field===b);
+                  if(fi===-1||ti===-1)return cf;const arr=[...cf];arr.splice(fi,1);arr.splice(ti,0,cf[fi]);return arr;
+                })}
+                emptyMsg="Press K on any field"/>
             </div>
             <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
               <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Live Preview</div>
@@ -1728,7 +2822,25 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         <div style={{padding:20}}>
           <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
-          <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}/>
+          <Report config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
+            tabs={config.tabs||null}
+            activeTabIdx={activeTabIdx}
+            onTabChange={(idx)=>{
+              setActiveTabIdx(idx);
+              const tabs=config.tabs||[];
+              if(tabs[idx]){
+                // Switch builder to that tab's config
+                setConfig(c=>({...c,...tabs[idx].config,name:c.name,tabs:c.tabs}));
+                if(tabs[idx].cardFields)setCardFields(tabs[idx].cardFields);
+              }
+            }}
+            onTabsChange={(newTabs)=>{
+              // Persist the current builder state into the active tab before saving
+              const updated=newTabs.map((t,i)=>i===activeTabIdx?{...t,config:{...config,tabs:undefined},cardFields:[...cardFields]}:t);
+              setConfig(c=>({...c,tabs:updated}));
+            }}
+            onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}
+            onColExcludedChange={cols=>setConfig(c=>({...c,colExcluded:cols}))}/>
         </div>
       )}
 
@@ -1757,44 +2869,155 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           publishedId={publishedId}
           onOpen={openSavedReport}
           onDelete={onDeleteReport}
-          onPublish={doPublish}/>
+          onPublish={doPublish}
+          onUnpublish={doUnpublish}/>
       )}
       {showSettings&&<SettingsPanel currentUser={currentUser} onClose={()=>setShowSettings(false)}/>}
+      {saveDialog&&(
+        <div style={{position:"fixed",inset:0,zIndex:600,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:28,width:"min(420px,90vw)",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:16,color:T.primary,marginBottom:8}}>Save Report</div>
+            <div style={{fontSize:13,color:T.textMd,marginBottom:20,lineHeight:1.6}}>
+              This report was previously saved. Do you want to <strong>overwrite</strong> the existing version, or <strong>save as a new</strong> report?
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              <button onClick={()=>setSaveDialog(false)} style={{padding:"8px 16px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:13,color:T.text}}>
+                Cancel
+              </button>
+              <button onClick={()=>commitSave(false)} style={{padding:"8px 16px",background:"none",border:"1px solid "+T.primary,borderRadius:7,cursor:"pointer",fontSize:13,color:T.primary,fontWeight:600}}>
+                Save as New
+              </button>
+              <button onClick={()=>commitSave(true)} style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>
+                Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── User view ──────────────────────────────────────────────────────────────────
-function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
+function UserView({onLogout,savedReports,onLoadReportData}) {
   const [activeId,setActiveId]=useState(null);
-  const [loadedData,setLoadedData]=useState({}); // {reportId -> {rows,fields,numFields}}
   const [dataLoading,setDataLoading]=useState(false);
+  const [refreshing,setRefreshing]=useState(false); // background refresh (doesn't blank report)
+  const [lastRefreshed,setLastRefreshed]=useState(null);
+  const [refreshError,setRefreshError]=useState("");
+  const [userActiveTabIdx,setUserActiveTabIdx]=useState(0);
+  const autoRefreshRef=useRef(null);
 
+  // ── localStorage cache helpers ──────────────────────────────────────────────
+  function cacheKey(id){return "rh_data_"+id;}
+  function saveCache(id,data){
+    try{localStorage.setItem(cacheKey(id),JSON.stringify({
+      rows:data.rows,fields:data.fields,
+      numFields:[...(data.numFields instanceof Set?data.numFields:new Set(data.numFields||[]))],
+      ts:Date.now()
+    }));}catch(e){/* quota exceeded — ignore */}
+  }
+  function loadCache(id){
+    try{
+      const raw=localStorage.getItem(cacheKey(id));
+      if(!raw)return null;
+      const d=JSON.parse(raw);
+      return {...d,numFields:new Set(d.numFields||[])};
+    }catch(e){return null;}
+  }
+
+  // Initialise loadedData from localStorage cache for instant display
+  const [loadedData,setLoadedData]=useState(()=>{
+    const init={};
+    try{
+      Object.keys(localStorage).filter(k=>k.startsWith("rh_data_")).forEach(k=>{
+        const id=k.replace("rh_data_","");
+        const d=loadCache(id);
+        if(d)init[id]=d;
+      });
+    }catch(e){}
+    return init;
+  });
+
+  const publishedReports=useMemo(()=>savedReports.filter(r=>r.isPublished),[savedReports]);
   const currentMeta=useMemo(()=>{
-    if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReport;
-    return publishedReport;
-  },[activeId,savedReports,publishedReport]);
+    if (activeId) return savedReports.find(r=>r.id===activeId)||publishedReports[0]||null;
+    return publishedReports[0]||null;
+  },[activeId,savedReports,publishedReports]);
 
-  // Load data whenever the selected report changes
+  useEffect(()=>{ setUserActiveTabIdx(0); },[currentMeta?.id]);
+
+  // Load data when report changes — show cache instantly, fetch DB in background
   useEffect(()=>{
     if (!currentMeta) return;
     const id=currentMeta.id;
-    if (loadedData[id]) return; // already loaded
-    setDataLoading(true);
-    onLoadReportData(id)
-      .then(data=>setLoadedData(p=>({...p,[id]:data})))
-      .catch(e=>console.error("Load error",e))
-      .finally(()=>setDataLoading(false));
-  },[currentMeta]);
+    const cached=loadedData[id];
+    if (!cached){
+      // No cache — show spinner, load from DB
+      setDataLoading(true);
+      onLoadReportData(id)
+        .then(data=>{
+          setLoadedData(p=>({...p,[id]:data}));
+          saveCache(id,data);
+        })
+        .catch(e=>console.error("Load error",e))
+        .finally(()=>setDataLoading(false));
+    } else {
+      // Cache hit — display immediately, silently refresh from DB in background
+      setDataLoading(false);
+      onLoadReportData(id)
+        .then(data=>{
+          setLoadedData(p=>({...p,[id]:data}));
+          saveCache(id,data);
+        })
+        .catch(()=>{/* silent background refresh failed — keep showing cache */});
+    }
+  },[currentMeta?.id]);
+
+  // Refresh from source URL — old data stays visible, spinner overlay only
+  async function refreshFromSource(silent=false) {
+    if (!currentMeta) return;
+    const links = currentMeta.config&&currentMeta.config.sourceLinks||[];
+    if (!links.length) return;
+    if (!silent) setRefreshing(true);
+    setRefreshError("");
+    try {
+      const lk = links[0];
+      const result = await fetchUrlViaProxy(lk.url, lk.sheet||undefined);
+      const existingFields = currentData ? currentData.fields : Object.keys(result.rows[0]||{});
+      const existingNumFields = currentData ? currentData.numFields : new Set();
+      const newData = {rows:result.rows, fields:existingFields, numFields:existingNumFields};
+      setLoadedData(p=>({...p,[currentMeta.id]:newData}));
+      saveCache(currentMeta.id, newData); // persist so next page load is instant
+      setLastRefreshed(new Date());
+    } catch(e) {
+      if (!silent) setRefreshError(e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  // ── Auto-refresh every N minutes when report has a source link ──────────────
+  const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
+  useEffect(()=>{
+    if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    const links = currentMeta&&currentMeta.config&&currentMeta.config.sourceLinks||[];
+    if (links.length===0) return;
+    // Immediately do a silent refresh when report is selected (picks up latest without user action)
+    const t = setTimeout(()=>refreshFromSource(true), 1500);
+    // Then auto-refresh every 5 minutes
+    autoRefreshRef.current = setInterval(()=>refreshFromSource(true), AUTO_REFRESH_MS);
+    return()=>{clearTimeout(t); if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);};
+  },[currentMeta?.id]);
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
 
-  if (!publishedReport&&!savedReports.length) return(
+  if (!publishedReports.length) return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage}}>
       <div style={{textAlign:"center"}}>
         <div style={{fontSize:44,marginBottom:14}}>📋</div>
-        <div style={{fontWeight:700,fontSize:16,color:T.text,marginBottom:8}}>No reports available yet</div>
-        <div style={{fontSize:13,color:T.textMd}}>Ask your admin to upload data and publish a report.</div>
+        <div style={{fontWeight:700,fontSize:16,color:T.text,marginBottom:8}}>No published reports yet</div>
+        <div style={{fontSize:13,color:T.textMd}}>Ask your admin to publish a report from the Reports tab.</div>
       </div>
     </div>
   );
@@ -1802,15 +3025,14 @@ function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
   return(
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="User" onLogout={onLogout}>
-        {savedReports.length>0&&(
+        {publishedReports.length>0&&(
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:11,color:"rgba(245,239,230,0.6)"}}>Report:</span>
-            <select value={activeId||(publishedReport?"published":"")}
-              onChange={e=>setActiveId(e.target.value==="published"?null:e.target.value)}
+            <select value={activeId||publishedReports[0]?.id||""}
+              onChange={e=>setActiveId(e.target.value)}
               style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,background:"rgba(255,255,255,0.1)",
-                color:T.textLt,fontSize:12,cursor:"pointer",outline:"none",maxWidth:200}}>
-              {publishedReport&&<option value="published">{publishedReport.name} (published)</option>}
-              {savedReports.filter(r=>!r.isPublished).map(r=>(
+                color:T.textLt,fontSize:12,cursor:"pointer",outline:"none",maxWidth:220}}>
+              {publishedReports.map(r=>(
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
@@ -1826,20 +3048,53 @@ function UserView({onLogout,savedReports,publishedReport,onLoadReportData}) {
       )}
       {!dataLoading&&currentMeta&&currentData?(
         <div style={{padding:20}}>
-          <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:4}}>
-            <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
-            {currentMeta.isPublished&&<span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+              <div style={{fontWeight:700,fontSize:18,color:T.primary}}>{currentMeta.config.name}</div>
+              <span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div style={{fontSize:11,color:T.textMd}}>
+                {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields
+                {lastRefreshed&&<span style={{marginLeft:8,color:T.success}}>· Refreshed {lastRefreshed.toLocaleTimeString()}</span>}
+              </div>
+              {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
+                <button onClick={()=>refreshFromSource(false)} disabled={refreshing}
+                  title="Pull latest data from Google Drive / OneDrive"
+                  style={{display:"flex",alignItems:"center",gap:6,padding:"6px 14px",
+                    background:refreshing?"rgba(92,45,26,0.08)":T.primary,
+                    color:refreshing?T.primary:T.textLt,
+                    border:"1px solid "+T.primary,borderRadius:7,
+                    cursor:refreshing?"not-allowed":"pointer",
+                    fontSize:12,fontWeight:600,transition:"all 0.2s"}}>
+                  <span style={{display:"inline-block",animation:refreshing?"spin 0.8s linear infinite":"none",fontSize:14}}>↻</span>
+                  {refreshing?"Updating...":"Refresh"}
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>
-            {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields · Click cells to drill down
-          </div>
+          {refreshError&&(
+            <div style={{padding:"8px 12px",background:"rgba(163,45,45,0.07)",border:"1px solid rgba(163,45,45,0.25)",
+              borderRadius:7,fontSize:12,color:"#A32D2D",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+              <span>⚠</span><span>{refreshError}</span>
+              <button onClick={()=>setRefreshError("")} style={{marginLeft:"auto",background:"none",border:"none",cursor:"pointer",color:"#A32D2D",fontSize:14}}>×</button>
+            </div>
+          )}
+          <div style={{fontSize:12,color:T.textMd,marginBottom:14}}>Click cells to drill down</div>
           <Report
-            config={currentMeta.config}
+            config={currentMeta.config&&currentMeta.config.tabs&&currentMeta.config.tabs[userActiveTabIdx]
+              ? {...currentMeta.config,...currentMeta.config.tabs[userActiveTabIdx].config}
+              : currentMeta.config}
             data={currentData.rows}
             fields={currentData.fields}
             numFields={currentData.numFields}
             showExport
-            cardFields={currentMeta.cardFields||[]}/>
+            cardFields={currentMeta.config&&currentMeta.config.tabs&&currentMeta.config.tabs[userActiveTabIdx]
+              ? (currentMeta.config.tabs[userActiveTabIdx].cardFields||[])
+              : (currentMeta.cardFields||[])}
+            tabs={currentMeta.config&&currentMeta.config.tabs||null}
+            activeTabIdx={userActiveTabIdx}
+            onTabChange={setUserActiveTabIdx}/>
         </div>
       ):(!dataLoading&&<div style={{padding:40,textAlign:"center",fontSize:13,color:T.textMd}}>Select a report above.</div>)}
     </div>
@@ -1908,9 +3163,9 @@ function SettingsPanel({currentUser,onClose}) {
         <div style={{padding:20,overflowY:"auto",flex:1}}>
           {toast&&<div style={{padding:"8px 14px",background:"rgba(45,106,79,0.15)",border:"1px solid rgba(45,106,79,0.4)",borderRadius:7,fontSize:12,color:T.success,marginBottom:14}}>{toast}</div>}
           {/* Existing users */}
-          <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Existing users ({localUsers.length})</div>
+          <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Existing users ({users.length})</div>
           <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            {localUsers.map(u=>(
+            {users.map(u=>(
               <div key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:T.bgStat,borderRadius:8,border:"1px solid "+T.border}}>
                 <div style={{width:32,height:32,borderRadius:8,background:u.role==="admin"?T.primary:T.secondary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:T.textLt,fontWeight:700,flexShrink:0}}>
                   {u.role==="admin"?"A":"U"}
@@ -1970,9 +3225,10 @@ function SettingsPanel({currentUser,onClose}) {
 function Login({onLogin}) {
   const [username,setUsername]=useState("");
   const [password,setPassword]=useState("");
+  const [showPwd,setShowPwd]=useState(false);
   const [err,setErr]=useState("");
   const [loading,setLoading]=useState(false);
-  const inp={width:"100%",padding:"9px 12px",border:"1px solid "+T.border,borderRadius:7,fontSize:13,background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none"};
+  const inp={width:"100%",padding:"10px 12px",border:"1px solid "+T.border,borderRadius:8,fontSize:14,background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none"};
   async function tryLogin(){
     if (!username.trim()||!password){setErr("Enter username and password.");return;}
     setLoading(true);setErr("");
@@ -1980,43 +3236,55 @@ function Login({onLogin}) {
       const data=await apiLogin(username.trim(),password);
       onLogin(data.role,data.username,data.token);
     }catch(e){
-      setErr(e.message||"Login failed. Check credentials.");
+      const msg=e.message||"";
+      if (msg.includes("Failed to fetch")||msg.includes("NetworkError")||msg.includes("ERR_NETWORK"))
+        setErr("Cannot reach the server. Please check your internet connection and try again.");
+      else if (msg.includes("401")||msg.includes("Invalid"))
+        setErr("Wrong username or password. Please try again.");
+      else
+        setErr(msg||"Login failed. Please try again.");
     }finally{setLoading(false);}
   }
   return(
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
-      <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:16,padding:"40px 36px",width:380,boxShadow:"0 4px 24px rgba(92,45,26,0.15)"}}>
-        <div style={{textAlign:"center",marginBottom:24}}>
-          <div style={{width:54,height:54,background:T.primary,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,margin:"0 auto 14px"}}>📊</div>
-          <h2 style={{fontSize:22,fontWeight:800,margin:"0 0 4px",color:T.primary,letterSpacing:"-0.5px"}}>ReportHub</h2>
-          <p style={{fontSize:12,color:T.textMd,margin:0}}>Upload Excel · Pivot reports · Drill-down · Crore/Lakh</p>
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bgPage,fontFamily:"system-ui,sans-serif",padding:"20px"}}>
+      <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:16,padding:"40px 32px",width:"100%",maxWidth:380,boxShadow:"0 4px 24px rgba(92,45,26,0.15)"}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{width:60,height:60,background:T.primary,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,margin:"0 auto 16px"}}>📊</div>
+          <h2 style={{fontSize:24,fontWeight:800,margin:"0",color:T.primary,letterSpacing:"-0.5px"}}>ReportHub</h2>
         </div>
-        {err&&<div style={{padding:"8px 12px",background:"rgba(163,45,45,0.09)",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,fontSize:12,color:T.danger,marginBottom:12}}>{err}</div>}
-        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+        {err&&<div style={{padding:"10px 14px",background:"rgba(163,45,45,0.09)",border:"1px solid rgba(163,45,45,0.3)",borderRadius:8,fontSize:12,color:T.danger,marginBottom:14,lineHeight:1.5}}>{err}</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:12,marginBottom:18}}>
           <div>
-            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:4}}>Username</div>
+            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:5}}>Username</div>
             <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="Enter username"
+              autoComplete="username"
               style={inp} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
           </div>
           <div>
-            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:4}}>Password</div>
-            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"
-              style={inp} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
+            <div style={{fontSize:11,color:T.textMd,fontWeight:600,marginBottom:5}}>Password</div>
+            <div style={{position:"relative"}}>
+              <input type={showPwd?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"
+                autoComplete="current-password"
+                style={{...inp,paddingRight:44}} onKeyDown={e=>e.key==="Enter"&&tryLogin()}/>
+              <button type="button" onClick={()=>setShowPwd(v=>!v)}
+                title={showPwd?"Hide password":"Show password"}
+                style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",
+                  background:"none",border:"none",cursor:"pointer",fontSize:14,color:T.textMd,padding:"4px 6px"}}>
+                {showPwd?"🙈":"👁"}
+              </button>
+            </div>
           </div>
         </div>
-        <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"10px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700}}>
+        <button onClick={tryLogin} disabled={loading} style={{width:"100%",padding:"11px",background:loading?"rgba(92,45,26,0.5)":T.primary,color:T.textLt,border:"none",borderRadius:8,cursor:loading?"wait":"pointer",fontSize:14,fontWeight:700,letterSpacing:"0.3px"}}>
           {loading?"Signing in…":"Sign in"}
         </button>
-        <p style={{fontSize:11,color:T.textMd,marginTop:16,marginBottom:0,textAlign:"center"}}>
-          Default: <code>admin</code> / <code>admin123</code> · Credentials set in Railway
-        </p>
       </div>
     </div>
   );
 }
 
 // ── Reports Manager (Admin tab) ────────────────────────────────────────────────
-function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload}) {
+function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishedId,onReload}) {
   if (!savedReports.length) return(
     <div style={{padding:40,textAlign:"center"}}>
       <div style={{fontSize:40,marginBottom:14}}>📋</div>
@@ -2032,9 +3300,9 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload
       </div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {savedReports.map(r=>(
-          <div key={r.id} style={{background:T.bgCard,border:"1px solid "+(r.id===publishedId?T.primary:T.border),borderRadius:10,padding:"14px 18px",display:"flex",alignItems:"center",gap:14}}>
-            <div style={{width:40,height:40,background:r.id===publishedId?T.primary:T.bgStat,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
-              {r.id===publishedId?"📤":"📊"}
+          <div key={r.id} style={{background:T.bgCard,border:"1px solid "+(r.isPublished?T.primary:T.border),borderRadius:10,padding:"14px 18px",display:"flex",alignItems:"center",gap:14}}>
+            <div style={{width:40,height:40,background:r.isPublished?T.primary:T.bgStat,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
+              {r.isPublished?"📤":"📊"}
             </div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:700,fontSize:14,color:T.text,marginBottom:2}}>{r.name}</div>
@@ -2051,12 +3319,20 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,publishedId,onReload
                 style={{padding:"5px 13px",border:"1px solid "+T.border,borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.text,fontWeight:500}}>
                 Open
               </button>
-              <button onClick={()=>onPublish(r.id)}
-                style={{padding:"5px 13px",border:"1px solid "+(r.id===publishedId?T.primary:T.border),borderRadius:6,
-                  background:r.id===publishedId?T.primary:"none",cursor:"pointer",fontSize:12,
-                  color:r.id===publishedId?T.textLt:T.text,fontWeight:r.id===publishedId?700:400}}>
-                {r.id===publishedId?"Published":"Publish"}
-              </button>
+              {r.isPublished
+                ? <button onClick={async()=>await onUnpublish(r.id)}
+                    style={{padding:"5px 13px",border:"1px solid "+T.primary,borderRadius:6,
+                      background:T.primary,cursor:"pointer",fontSize:12,color:T.textLt,fontWeight:700}}
+                    title="Click to unpublish">
+                    ✓ Published
+                  </button>
+                : <button onClick={async()=>await onPublish(r.id)}
+                    style={{padding:"5px 13px",border:"1px solid "+T.border,borderRadius:6,
+                      background:"none",cursor:"pointer",fontSize:12,color:T.text}}
+                    title="Publish to users">
+                    Publish
+                  </button>
+              }
               <button onClick={async()=>{if(confirm("Delete report \'"+r.name+"\'?")) await onDelete(r.id);}}
                 style={{padding:"5px 10px",border:"1px solid rgba(163,45,45,0.3)",borderRadius:6,background:"none",cursor:"pointer",fontSize:12,color:T.danger}}>
                 Delete
@@ -2079,7 +3355,10 @@ function parseReportMeta(r) {
     fields: r.field_count||0,
     savedAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
     config: typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{}),
-    cardFields: typeof r.card_fields==="string" ? JSON.parse(r.card_fields) : (r.card_fields||[]),
+    cardFields: (()=>{const cf=typeof r.card_fields==="string"?JSON.parse(r.card_fields):(r.card_fields||[]);
+      // Normalise: legacy data may have strings, new data has {field,agg} objects
+      return cf.map(x=>typeof x==="string"?{field:x,agg:"sum"}:x);
+    })(),
     isPublished: !!r.is_published,
     dataset: null, // rows loaded lazily on demand
   };
@@ -2104,7 +3383,16 @@ function App() {
     const username=localStorage.getItem("rh_username");
     if (token&&role&&username) {
       setCurrentUser(username);
-      loadAllReports().then(()=>setScreen(role)).catch(()=>setScreen("login"));
+      // Verify token is still valid by loading reports
+      // If expired/invalid → clear storage and show login
+      loadAllReports()
+        .then(()=>setScreen(role))
+        .catch(()=>{
+          localStorage.removeItem("rh_token");
+          localStorage.removeItem("rh_role");
+          localStorage.removeItem("rh_username");
+          setScreen("login");
+        });
     } else {
       setScreen("login");
     }
@@ -2112,15 +3400,12 @@ function App() {
 
   // ── Load report list from API ──────────────────────────────────────────────
   async function loadAllReports() {
-    try {
-      const list=await getReports();
-      const entries=list.map(parseReportMeta);
-      setSavedReports(entries);
-      const pub=entries.find(r=>r.isPublished);
-      setPublishedId(pub?pub.id:null);
-    } catch(e) {
-      setLoadErr("Could not load reports: "+e.message);
-    }
+    // NOTE: do NOT catch here — let caller handle auth errors
+    const list=await getReports();
+    const entries=list.map(parseReportMeta);
+    setSavedReports(entries);
+    const pub=entries.find(r=>r.isPublished);
+    setPublishedId(pub?pub.id:null);
   }
 
   // ── Lazy-load rows for a specific report ───────────────────────────────────
@@ -2156,11 +3441,15 @@ function App() {
     if (publishedId===id) setPublishedId(null);
   }
 
-  // ── Publish report → PATCH to API ─────────────────────────────────────────
+  // ── Publish report → always sets published=true ───────────────────────────
   async function handlePublishReport(id) {
     await apiPublishReport(id);
-    setPublishedId(id);
-    setSavedReports(prev=>prev.map(r=>({...r,isPublished:r.id===id})));
+    await loadAllReports();
+  }
+  // ── Unpublish report → always sets published=false ─────────────────────────
+  async function handleUnpublishReport(id) {
+    await apiUnpublishReport(id);
+    await loadAllReports();
   }
 
   // ── Login / Logout ─────────────────────────────────────────────────────────
@@ -2202,6 +3491,7 @@ function App() {
           publishedId={publishedId}
           onSaveReport={handleSaveReport}
           onPublishReport={handlePublishReport}
+          onUnpublishReport={handleUnpublishReport}
           onDeleteReport={handleDeleteReport}
           onLoadReportData={loadReportData}
           onReloadReports={loadAllReports}
@@ -2209,10 +3499,9 @@ function App() {
       :<UserView
           onLogout={doLogout}
           savedReports={savedReports}
-          publishedReport={publishedReport}
-          onLoadReportData={loadReportData}/>;
+          onLoadReportData={loadReportData}
+          isGuest={false}/>;
 }
-
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 </script>
