@@ -812,7 +812,7 @@ const ResizeHandle=({onMouseDown})=>(
 // ── Chart View — visualisations of pivot result ─────────────────────────────────
 function ChartView({result, numFmt, chartType, onChartTypeChange}) {
   if (!result || result.error) return null;
-  const { cells, vals, rowKeys, colVals, grandTotals } = result;
+  const { cells, vals, rowKeys, colVals } = result;
   const hasGroups = colVals && colVals.length > 0;
   const nV = vals.length;
 
@@ -825,114 +825,186 @@ function ChartView({result, numFmt, chartType, onChartTypeChange}) {
     );
   }
 
-  // Use Recharts from window if available, else show notice
-  const R = window.Recharts;
-  if (!R) {
-    return (
-      <div style={{padding:"30px 20px",textAlign:"center",color:T.textMd,background:T.bgCard,
-        borderRadius:10,border:"1px dashed "+T.border}}>
-        Charts library is loading… please wait a moment and try again.
-      </div>
-    );
-  }
-
-  // Build chart-friendly data: one entry per row, with one numeric value per col group + metric
+  // Build chart data: each row becomes a category label with one or more numeric values
   const chartData = rowKeys.map(rk => {
     const rkStr = rk.join("\0");
     const cellRow = cells[rkStr] || {};
-    const out = { name: rk.join(" · ") };
+    const out = { name: rk.join(" · "), values: [] };
     if (hasGroups) {
       colVals.forEach(cv => {
         vals.forEach((v, vi) => {
-          const key = (nV > 1) ? `${cv} — ${v.field}` : cv;
-          out[key] = ((cellRow[cv] || [])[vi]) || 0;
+          out.values.push({
+            label: (nV > 1) ? `${cv} — ${v.field}` : String(cv),
+            value: ((cellRow[cv] || [])[vi]) || 0,
+          });
         });
       });
     } else {
       vals.forEach((v, vi) => {
-        out[v.field] = ((cellRow["__total__"] || [])[vi]) || 0;
+        out.values.push({ label: v.field, value: ((cellRow["__total__"] || [])[vi]) || 0 });
       });
     }
     return out;
   });
 
-  // Series keys (one per coloured bar/line/slice)
-  let series = [];
-  if (hasGroups) {
-    colVals.forEach(cv => {
-      vals.forEach(v => {
-        series.push((nV > 1) ? `${cv} — ${v.field}` : cv);
-      });
-    });
-  } else {
-    vals.forEach(v => series.push(v.field));
-  }
-
+  // Distinct series (legend keys)
+  const series = chartData[0] ? chartData[0].values.map(v => v.label) : [];
   const palette = [T.primary, T.accent, "#7B5C3E", "#A07850", "#5C2D1A", "#C8922A", "#8B6B4A", "#3D1F11"];
 
-  const fmt = (n) => fmtNum(n, "sum", "", numFmt).replace("₹","");
+  // Determine value range for axis scaling
+  const allValues = chartData.flatMap(d => d.values.map(v => v.value));
+  const maxV = Math.max(...allValues, 0);
+  const minV = Math.min(...allValues, 0);
+  const range = maxV - minV || 1;
 
-  // ── Chart renderers ───────────────────────────────────────────────────────────
-  const containerStyle = { width: "100%", height: 460 };
+  // Format short labels for axis
+  const fmtShort = (n) => fmtNum(n, "sum", "", numFmt).replace("₹","").trim();
+
+  // Chart dimensions
+  const W = 900, H = 380;
+  const padL = 70, padR = 30, padT = 20, padB = 80;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  // X positions for each row group
+  const groupW = innerW / Math.max(chartData.length, 1);
+
+  // Render Y-axis with 5 tick marks
+  const yTicks = 5;
+  const yTickValues = Array.from({length:yTicks+1},(_,i)=>minV+(range*i/yTicks));
+  const yPos = (v) => padT + innerH - ((v - minV) / range) * innerH;
 
   let chartEl = null;
+
   if (chartType === "bar") {
+    // Grouped bar chart
+    const barW = Math.max(2, (groupW * 0.75) / Math.max(series.length, 1));
     chartEl = (
-      <R.ResponsiveContainer {...containerStyle}>
-        <R.BarChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
-          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
-          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
-          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
-          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
-            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
-          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
-          {series.map((s,i)=><R.Bar key={s} dataKey={s} fill={palette[i%palette.length]}/>)}
-        </R.BarChart>
-      </R.ResponsiveContainer>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:480,display:"block"}}>
+        {/* Grid lines */}
+        {yTickValues.map((tv,i)=>(
+          <g key={i}>
+            <line x1={padL} x2={W-padR} y1={yPos(tv)} y2={yPos(tv)} stroke={T.border} strokeDasharray="3 3"/>
+            <text x={padL-8} y={yPos(tv)+4} fontSize="10" fill={T.textMd} textAnchor="end">{fmtShort(tv)}</text>
+          </g>
+        ))}
+        {/* X-axis baseline */}
+        <line x1={padL} x2={W-padR} y1={yPos(0)} y2={yPos(0)} stroke={T.borderDk}/>
+        {/* Bars and labels */}
+        {chartData.map((d,gi)=>{
+          const groupX = padL + gi*groupW + (groupW - barW*series.length)/2;
+          return(
+            <g key={gi}>
+              {d.values.map((v,si)=>{
+                const x = groupX + si*barW;
+                const y = v.value >= 0 ? yPos(v.value) : yPos(0);
+                const h = Math.abs(yPos(v.value) - yPos(0));
+                return(
+                  <rect key={si} x={x} y={y} width={barW-1} height={h}
+                    fill={palette[si%palette.length]} rx={2}>
+                    <title>{d.name} · {v.label}: {fmtNum(v.value,"sum","",numFmt)}</title>
+                  </rect>
+                );
+              })}
+              <text x={padL+gi*groupW+groupW/2} y={H-padB+15} fontSize="10" fill={T.text}
+                textAnchor="middle" transform={`rotate(-30 ${padL+gi*groupW+groupW/2} ${H-padB+15})`}>
+                {d.name.length>20?d.name.slice(0,20)+"…":d.name}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     );
-  } else if (chartType === "line") {
+  } else if (chartType === "line" || chartType === "area") {
     chartEl = (
-      <R.ResponsiveContainer {...containerStyle}>
-        <R.LineChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
-          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
-          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
-          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
-          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
-            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
-          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
-          {series.map((s,i)=><R.Line key={s} type="monotone" dataKey={s} stroke={palette[i%palette.length]} strokeWidth={2} dot={{r:3}}/>)}
-        </R.LineChart>
-      </R.ResponsiveContainer>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:480,display:"block"}}>
+        {yTickValues.map((tv,i)=>(
+          <g key={i}>
+            <line x1={padL} x2={W-padR} y1={yPos(tv)} y2={yPos(tv)} stroke={T.border} strokeDasharray="3 3"/>
+            <text x={padL-8} y={yPos(tv)+4} fontSize="10" fill={T.textMd} textAnchor="end">{fmtShort(tv)}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={W-padR} y1={yPos(0)} y2={yPos(0)} stroke={T.borderDk}/>
+        {/* One line/area per series */}
+        {series.map((sLabel,si)=>{
+          const points = chartData.map((d,gi)=>{
+            const x = padL + gi*groupW + groupW/2;
+            const v = d.values[si] ? d.values[si].value : 0;
+            return [x, yPos(v)];
+          });
+          const pathD = points.map((p,i)=>(i===0?"M":"L")+p[0]+","+p[1]).join(" ");
+          if (chartType === "area") {
+            const areaD = pathD + ` L${points[points.length-1][0]},${yPos(0)} L${points[0][0]},${yPos(0)} Z`;
+            return(
+              <g key={si}>
+                <path d={areaD} fill={palette[si%palette.length]} fillOpacity="0.3"/>
+                <path d={pathD} stroke={palette[si%palette.length]} strokeWidth="2" fill="none"/>
+                {points.map((p,i)=>(
+                  <circle key={i} cx={p[0]} cy={p[1]} r="3" fill={palette[si%palette.length]}>
+                    <title>{chartData[i].name} · {sLabel}: {fmtNum(chartData[i].values[si]?chartData[i].values[si].value:0,"sum","",numFmt)}</title>
+                  </circle>
+                ))}
+              </g>
+            );
+          }
+          return(
+            <g key={si}>
+              <path d={pathD} stroke={palette[si%palette.length]} strokeWidth="2.5" fill="none"/>
+              {points.map((p,i)=>(
+                <circle key={i} cx={p[0]} cy={p[1]} r="3.5" fill={palette[si%palette.length]}>
+                  <title>{chartData[i].name} · {sLabel}: {fmtNum(chartData[i].values[si]?chartData[i].values[si].value:0,"sum","",numFmt)}</title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+        {/* X-axis labels */}
+        {chartData.map((d,gi)=>(
+          <text key={gi} x={padL+gi*groupW+groupW/2} y={H-padB+15} fontSize="10" fill={T.text}
+            textAnchor="middle" transform={`rotate(-30 ${padL+gi*groupW+groupW/2} ${H-padB+15})`}>
+            {d.name.length>20?d.name.slice(0,20)+"…":d.name}
+          </text>
+        ))}
+      </svg>
     );
   } else if (chartType === "pie") {
-    // Pie: only first series (sum across rows)
-    const pieData = chartData.map(d => ({ name: d.name, value: d[series[0]] || 0 }));
-    chartEl = (
-      <R.ResponsiveContainer {...containerStyle}>
-        <R.PieChart>
-          <R.Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={140}
-            label={(e)=>`${e.name}: ${fmtNum(e.value,"sum","",numFmt)}`}>
-            {pieData.map((_,i)=><R.Cell key={i} fill={palette[i%palette.length]}/>)}
-          </R.Pie>
-          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}/>
-          <R.Legend wrapperStyle={{fontSize:11}}/>
-        </R.PieChart>
-      </R.ResponsiveContainer>
-    );
-  } else if (chartType === "area") {
-    chartEl = (
-      <R.ResponsiveContainer {...containerStyle}>
-        <R.AreaChart data={chartData} margin={{top:20,right:20,left:10,bottom:60}}>
-          <R.CartesianGrid strokeDasharray="3 3" stroke={T.border}/>
-          <R.XAxis dataKey="name" angle={-30} textAnchor="end" height={70} tick={{fontSize:11,fill:T.text}}/>
-          <R.YAxis tick={{fontSize:11,fill:T.text}} tickFormatter={fmt}/>
-          <R.Tooltip formatter={(v)=>fmtNum(v,"sum","",numFmt)}
-            contentStyle={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:6,fontSize:12}}/>
-          <R.Legend wrapperStyle={{fontSize:11,paddingTop:10}}/>
-          {series.map((s,i)=><R.Area key={s} type="monotone" dataKey={s} stackId="1" stroke={palette[i%palette.length]} fill={palette[i%palette.length]} fillOpacity={0.6}/>)}
-        </R.AreaChart>
-      </R.ResponsiveContainer>
-    );
+    // Pie: aggregate first series across all rows
+    const pieData = chartData.map(d=>({name:d.name, value:d.values[0]?d.values[0].value:0})).filter(d=>d.value>0);
+    const total = pieData.reduce((s,d)=>s+d.value,0);
+    if (total === 0) {
+      chartEl = <div style={{textAlign:"center",padding:40,color:T.textMd}}>No positive values to chart</div>;
+    } else {
+      const cx = W/2, cy = H/2-10, r = Math.min(innerW, innerH)/2.5;
+      let cumAngle = -Math.PI/2; // start at top
+      const slices = pieData.map((d,i)=>{
+        const angle = (d.value/total) * Math.PI*2;
+        const x1 = cx + r*Math.cos(cumAngle), y1 = cy + r*Math.sin(cumAngle);
+        const x2 = cx + r*Math.cos(cumAngle+angle), y2 = cy + r*Math.sin(cumAngle+angle);
+        const large = angle > Math.PI ? 1 : 0;
+        const path = `M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} Z`;
+        const labelAngle = cumAngle + angle/2;
+        const lx = cx + (r+15)*Math.cos(labelAngle), ly = cy + (r+15)*Math.sin(labelAngle);
+        cumAngle += angle;
+        return {path, color:palette[i%palette.length], lx, ly, label:d.name, value:d.value, pct:(d.value/total*100)};
+      });
+      chartEl = (
+        <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",maxHeight:480,display:"block"}}>
+          {slices.map((s,i)=>(
+            <g key={i}>
+              <path d={s.path} fill={s.color} stroke={T.bgCard} strokeWidth="2">
+                <title>{s.label}: {fmtNum(s.value,"sum","",numFmt)} ({s.pct.toFixed(1)}%)</title>
+              </path>
+              {s.pct>=4&&(
+                <text x={s.lx} y={s.ly} fontSize="10" fill={T.text}
+                  textAnchor={s.lx>cx?"start":"end"}>
+                  {s.label.length>15?s.label.slice(0,15)+"…":s.label} ({s.pct.toFixed(0)}%)
+                </text>
+              )}
+            </g>
+          ))}
+        </svg>
+      );
+    }
   }
 
   return (
@@ -958,6 +1030,17 @@ function ChartView({result, numFmt, chartType, onChartTypeChange}) {
         </div>
       </div>
       {chartEl}
+      {/* Legend */}
+      {chartType!=="pie"&&series.length>0&&(
+        <div style={{display:"flex",flexWrap:"wrap",gap:14,marginTop:8,justifyContent:"center"}}>
+          {series.map((s,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.text}}>
+              <span style={{width:12,height:12,background:palette[i%palette.length],borderRadius:2,display:"inline-block"}}/>
+              {s}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1250,6 +1333,8 @@ function FormatSelector({value,onChange}) {
 
 // ── Report ─────────────────────────────────────────────────────────────────────
 function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange}) {
+  // Defensive: ensure numFields is always a Set (DB may return array)
+  numFields = useMemo(()=>numFields instanceof Set ? numFields : new Set(Array.isArray(numFields)?numFields:Object.values(numFields||{})), [numFields]);
   const [filters,setFilters]=useState({});
   const [drill,setDrill]=useState(null);
   const [numFmt,setNumFmt]=useState("Cr");
@@ -1318,10 +1403,10 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
 
   return(
     <div>
-      {/* Tab strip — multi-section reports */}
-      {tabs&&tabs.length>0&&(
+      {/* Tab strip — multi-section reports. Shown for admin (onTabsChange present) or when tabs exist */}
+      {(onTabsChange||(tabs&&tabs.length>0))&&(
         <div style={{display:"flex",gap:0,marginBottom:14,borderBottom:"2px solid "+T.border,overflowX:"auto",alignItems:"flex-end"}}>
-          {tabs.map((t,i)=>(
+          {(tabs||[]).map((t,i)=>(
             <div key={t.id||i} style={{position:"relative",display:"flex",alignItems:"center"}}>
               <button onClick={()=>onTabChange&&onTabChange(i)}
                 style={{padding:"8px 16px",border:"none",
@@ -1334,7 +1419,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
                   marginBottom:i===activeTabIdx?-2:0,whiteSpace:"nowrap"}}>
                 {t.name||"Untitled"}
               </button>
-              {onTabsChange&&tabs.length>1&&i===activeTabIdx&&(
+              {onTabsChange&&(tabs||[]).length>1&&i===activeTabIdx&&(
                 <button onClick={(e)=>{
                     e.stopPropagation();
                     if(confirm("Delete tab "+(t.name||"Untitled")+"?")){
@@ -1353,11 +1438,23 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
           ))}
           {onTabsChange&&(
             <button onClick={()=>{
-                const name=prompt("Name for new tab?","Tab "+(tabs.length+1));
+                const existing=tabs||[];
+                const name=prompt("Name for new tab?","Tab "+(existing.length+1));
                 if(!name)return;
-                const newTab={id:"t"+Date.now(),name,config:{...config},cardFields:[...(cardFields||[])]};
-                onTabsChange([...tabs,newTab]);
-                onTabChange&&onTabChange(tabs.length);
+                // First time: snapshot current config as "Tab 1" before adding new
+                let newTabs;
+                if (existing.length===0) {
+                  const tab1={id:"t"+Date.now()+"a",name:"Tab 1",config:{...config},cardFields:[...(cardFields||[])]};
+                  const tab2={id:"t"+Date.now()+"b",name,config:{...config},cardFields:[...(cardFields||[])]};
+                  newTabs=[tab1,tab2];
+                  onTabsChange(newTabs);
+                  onTabChange&&onTabChange(1); // switch to new tab
+                } else {
+                  const newTab={id:"t"+Date.now(),name,config:{...config},cardFields:[...(cardFields||[])]};
+                  newTabs=[...existing,newTab];
+                  onTabsChange(newTabs);
+                  onTabChange&&onTabChange(existing.length);
+                }
               }}
               title="Add new tab"
               style={{padding:"8px 12px",border:"1px dashed "+T.border,background:"none",
@@ -1365,7 +1462,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               + Tab
             </button>
           )}
-          {onTabsChange&&tabs.length>0&&(
+          {onTabsChange&&(tabs||[]).length>0&&(
             <button onClick={()=>{
                 const cur=tabs[activeTabIdx];
                 const newName=prompt("Rename tab:",cur.name||"");
