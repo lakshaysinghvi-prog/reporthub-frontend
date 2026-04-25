@@ -594,62 +594,38 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
   const cardOff = {...cardBase, background:T.bgCard};
   const cardKpi = {...cardBase, background:T.bgStat, cursor:"default"};
 
-  // ── NUMERIC FIELD: clickable cards — split rows by has-value vs zero/blank ────
+  // ── NUMERIC FIELD: single clickable tile — toggle has-value filter ────────────
   if (isNumericField) {
     const total = fmtNum(doAgg(data, displayVal.field, displayVal.agg), displayVal.agg, displayVal.field, numFmt);
-    // Two buckets: rows where the field has a non-zero value, and rows where it doesn't
+    // "Has value" rows = field is non-null AND non-zero (positive OR negative)
     const withVal = data.filter(r => {
       const v = r[field];
       return v !== null && v !== undefined && v !== "" && Number(v) !== 0;
     });
-    const withoutVal = data.filter(r => {
-      const v = r[field];
-      return v === null || v === undefined || v === "" || Number(v) === 0;
-    });
-    const filterValues = ["__has__","__zero__"];
-    const isOn = (key) => active.includes(key);
+    const isOn = active.includes("__has__");
+    const displayData = isOn ? withVal : data;
+    const displayTotal = fmtNum(doAgg(displayData,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt);
     return (
       <div>
-        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-          <span style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px"}}>{field}</span>
-          {!allActive && (
-            <button onClick={()=>onFilter([])}
-              style={{fontSize:9,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
-              Clear
-            </button>
-          )}
+        <div style={{fontSize:10,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+          {field}
         </div>
-        <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4}}>
-          {/* All — total of all rows */}
-          <button onClick={()=>onFilter([])}
-            style={allActive?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
-            <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>All</div>
-            <div style={{fontSize:14,fontWeight:700,color:allActive?T.textLt:T.numColor}}>{total}</div>
-            <div style={{fontSize:9,color:allActive?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{data.length.toLocaleString()} rows</div>
-          </button>
-          {/* Has value */}
-          {withVal.length>0 && (
-            <button onClick={()=>onFilter(isOn("__has__")?[]:["__has__"])}
-              style={isOn("__has__")?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
-              <div style={{fontSize:9,color:isOn("__has__")?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>Has value</div>
-              <div style={{fontSize:14,fontWeight:700,color:isOn("__has__")?T.textLt:T.numColor}}>
-                {fmtNum(doAgg(withVal,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
-              </div>
-              <div style={{fontSize:9,color:isOn("__has__")?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{withVal.length.toLocaleString()} rows</div>
-            </button>
+        <button onClick={()=>onFilter(isOn?[]:["__has__"])}
+          title={isOn?"Click to clear — show all rows":"Click to filter — only rows with a value"}
+          style={{...(isOn?cardOn:cardOff), minWidth:140, width:"100%", textAlign:"left"}}>
+          {isOn && (
+            <div style={{fontSize:9,color:"rgba(245,239,230,0.75)",marginBottom:3,fontStyle:"italic"}}>
+              Filtered · click to clear
+            </div>
           )}
-          {/* Zero / blank */}
-          {withoutVal.length>0 && (
-            <button onClick={()=>onFilter(isOn("__zero__")?[]:["__zero__"])}
-              style={isOn("__zero__")?{...cardOn,minWidth:90}:{...cardOff,minWidth:90}}>
-              <div style={{fontSize:9,color:isOn("__zero__")?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>Zero / blank</div>
-              <div style={{fontSize:14,fontWeight:700,color:isOn("__zero__")?T.textLt:T.numColor}}>
-                {fmtNum(doAgg(withoutVal,displayVal.field,displayVal.agg),displayVal.agg,displayVal.field,numFmt)}
-              </div>
-              <div style={{fontSize:9,color:isOn("__zero__")?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>{withoutVal.length.toLocaleString()} rows</div>
-            </button>
-          )}
-        </div>
+          <div style={{fontSize:9,color:isOn?"rgba(245,239,230,0.7)":T.textMd,marginBottom:2}}>
+            {displayVal.agg} of {displayVal.field}
+          </div>
+          <div style={{fontSize:17,fontWeight:700,color:isOn?T.textLt:T.numColor}}>{displayTotal}</div>
+          <div style={{fontSize:9,color:isOn?"rgba(245,239,230,0.6)":T.textMd,marginTop:2}}>
+            {displayData.length.toLocaleString()} rows{isOn?" (with value)":""}
+          </div>
+        </button>
       </div>
     );
   }
@@ -1403,6 +1379,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const [pivotSort,setPivotSort]=useState(null); // {fieldIdx, dir}
   const [viewMode,setViewMode]=useState("table"); // "table" | "chart"
   const [chartType,setChartType]=useState("bar"); // bar | line | area | pie
+  const [tabDragIdx,setTabDragIdx]=useState(null);
   const [showAdHocPicker,setShowAdHocPicker]=useState(false);
   const adHocRef=useRef(null);
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
@@ -1462,16 +1439,39 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
       {(onTabsChange||(tabs&&tabs.length>0))&&(
         <div style={{display:"flex",gap:0,marginBottom:14,borderBottom:"2px solid "+T.border,overflowX:"auto",alignItems:"flex-end"}}>
           {(tabs||[]).map((t,i)=>(
-            <div key={t.id||i} style={{position:"relative",display:"flex",alignItems:"center"}}>
+            <div key={t.id||i}
+              draggable={!!onTabsChange}
+              onDragStart={()=>setTabDragIdx(i)}
+              onDragOver={e=>e.preventDefault()}
+              onDrop={()=>{
+                if(tabDragIdx===null||tabDragIdx===i||!onTabsChange)return;
+                const arr=[...(tabs||[])];
+                const [moved]=arr.splice(tabDragIdx,1);
+                arr.splice(i,0,moved);
+                // Adjust active index to follow the moved tab
+                let newActive=activeTabIdx;
+                if(activeTabIdx===tabDragIdx) newActive=i;
+                else if(tabDragIdx<activeTabIdx&&i>=activeTabIdx) newActive=activeTabIdx-1;
+                else if(tabDragIdx>activeTabIdx&&i<=activeTabIdx) newActive=activeTabIdx+1;
+                onTabsChange(arr);
+                if(newActive!==activeTabIdx) onTabChange&&onTabChange(newActive);
+                setTabDragIdx(null);
+              }}
+              onDragEnd={()=>setTabDragIdx(null)}
+              style={{position:"relative",display:"flex",alignItems:"center",
+                opacity:tabDragIdx===i?0.5:1,
+                cursor:onTabsChange?"grab":"default"}}>
               <button onClick={()=>onTabChange&&onTabChange(i)}
                 style={{padding:"8px 16px",border:"none",
                   background:i===activeTabIdx?T.bgCard:"none",
                   color:i===activeTabIdx?T.primary:T.textMd,
                   fontWeight:i===activeTabIdx?700:500,
-                  fontSize:13,cursor:"pointer",
+                  fontSize:13,cursor:onTabsChange?"grab":"pointer",
                   borderTopLeftRadius:8,borderTopRightRadius:8,
                   borderBottom:i===activeTabIdx?"2px solid "+T.primary:"none",
-                  marginBottom:i===activeTabIdx?-2:0,whiteSpace:"nowrap"}}>
+                  marginBottom:i===activeTabIdx?-2:0,whiteSpace:"nowrap",
+                  display:"flex",alignItems:"center",gap:6}}>
+                {onTabsChange&&<span style={{opacity:0.4,fontSize:10}}>⋮⋮</span>}
                 {t.name||"Untitled"}
               </button>
               {onTabsChange&&(tabs||[]).length>1&&i===activeTabIdx&&(
@@ -2844,18 +2844,33 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             tabs={config.tabs||null}
             activeTabIdx={activeTabIdx}
             onTabChange={(idx)=>{
-              setActiveTabIdx(idx);
-              const tabs=config.tabs||[];
-              if(tabs[idx]){
-                // Switch builder to that tab's config
-                setConfig(c=>({...c,...tabs[idx].config,name:c.name,tabs:c.tabs}));
-                if(tabs[idx].cardFields)setCardFields(tabs[idx].cardFields);
+              if(idx===activeTabIdx)return;
+              // STEP 1: Capture current edits of active tab back into config.tabs
+              const currentTabs=config.tabs||[];
+              const updatedTabs=currentTabs.map((t,i)=>
+                i===activeTabIdx
+                  ? {...t,config:{...config,tabs:undefined,name:undefined},cardFields:[...cardFields]}
+                  : t
+              );
+              // STEP 2: Switch to target tab's config
+              const target=updatedTabs[idx];
+              if (target) {
+                setConfig({...config,...target.config,name:config.name,tabs:updatedTabs});
+                if(target.cardFields)setCardFields([...target.cardFields]);
+              } else {
+                setConfig({...config,tabs:updatedTabs});
               }
+              setActiveTabIdx(idx);
             }}
             onTabsChange={(newTabs)=>{
-              // Persist the current builder state into the active tab before saving
-              const updated=newTabs.map((t,i)=>i===activeTabIdx?{...t,config:{...config,tabs:undefined},cardFields:[...cardFields]}:t);
-              setConfig(c=>({...c,tabs:updated}));
+              // Called for: add/delete/rename/reorder. Always preserve active-tab edits.
+              const synced=newTabs.map((t,i)=>{
+                // If this tab IS the active one AND has not been replaced wholesale, sync from current config
+                if (i===activeTabIdx && t && t.id===(config.tabs?.[activeTabIdx]?.id))
+                  return {...t,config:{...config,tabs:undefined,name:undefined},cardFields:[...cardFields]};
+                return t;
+              });
+              setConfig(c=>({...c,tabs:synced}));
             }}
             onDrillHiddenColsChange={cols=>setConfig(c=>({...c,drillHiddenCols:cols}))}
             onColExcludedChange={cols=>setConfig(c=>({...c,colExcluded:cols}))}/>
