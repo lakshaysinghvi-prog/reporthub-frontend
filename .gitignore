@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.DS_Store
+# Note: .env is committed intentionally (only contains public API URL)
