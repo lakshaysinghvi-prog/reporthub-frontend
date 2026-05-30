@@ -3949,11 +3949,21 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
         setColumns(cols);setCycles(cycs);setAllUsers(users);
       }catch(e){setMsg("Load error: "+e.message);}
 
-      // Load field names via lightweight endpoint
+      // Load field names — try lightweight endpoint first, then fall back to full data
+      let fieldsLoaded=false;
       try{
         const fields=await getReportFields(report.id);
-        if(Array.isArray(fields)&&fields.length>0) setDataFields(fields);
-      }catch(e){/* silently ignore — user can still proceed */}
+        if(Array.isArray(fields)&&fields.length>0){setDataFields(fields);fieldsLoaded=true;}
+      }catch(e){}
+      if(!fieldsLoaded){
+        try{
+          const rd=await getReportData(report.id);
+          const fields=rd.fields?.length?rd.fields
+                       :rd.rows?.length?Object.keys(rd.rows[0])
+                       :[];
+          if(fields.length>0)setDataFields(fields);
+        }catch(e){}
+      }
 
       setLoading(false);
     })();
