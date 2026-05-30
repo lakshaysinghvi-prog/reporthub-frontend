@@ -3939,30 +3939,39 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
 
   useEffect(()=>{
     (async()=>{
-      // Load collab metadata + users
-      try{
-        const [cols,cycs,users]=await Promise.all([
-          getCollabColumns(report.id),
-          getCollabCycles(report.id),
-          getUsers()
-        ]);
-        setColumns(cols);setCycles(cycs);setAllUsers(users);
-      }catch(e){setMsg("Load error: "+e.message);}
+      // Each call is independent — one failure never blocks others
 
-      // Load field names — try lightweight endpoint first, then fall back to full data
-      let fieldsLoaded=false;
+      // 1. Collab columns
+      try{
+        const cols=await getCollabColumns(report.id);
+        setColumns(cols);
+      }catch(e){setMsg("Could not load collab columns: "+e.message);}
+
+      // 2. Cycles
+      try{
+        const cycs=await getCollabCycles(report.id);
+        setCycles(cycs);
+      }catch(e){}
+
+      // 3. Users for inputter/reviewer assignment (silent fail — form still usable)
+      try{
+        const users=await getUsers();
+        if(Array.isArray(users))setAllUsers(users);
+      }catch(e){}
+
+      // 4. Field names — lightweight endpoint first, then full data fallback
       try{
         const fields=await getReportFields(report.id);
-        if(Array.isArray(fields)&&fields.length>0){setDataFields(fields);fieldsLoaded=true;}
-      }catch(e){}
-      if(!fieldsLoaded){
+        if(Array.isArray(fields)&&fields.length>0){setDataFields(fields);}
+        else throw new Error("empty");
+      }catch(e){
         try{
           const rd=await getReportData(report.id);
           const fields=rd.fields?.length?rd.fields
                        :rd.rows?.length?Object.keys(rd.rows[0])
                        :[];
           if(fields.length>0)setDataFields(fields);
-        }catch(e){}
+        }catch(e2){}
       }
 
       setLoading(false);
