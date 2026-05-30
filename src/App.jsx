@@ -3928,6 +3928,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [openingCycle,setOpeningCycle]=useState(false);
   const [rowKeyField,setRowKeyField]=useState(report?.config?.collab_row_key||"");
   const [savingRowKey,setSavingRowKey]=useState(false);
+  const [dataFields,setDataFields]=useState([]);
 
   // ColForm state
   const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[],ref_column:""};
@@ -3936,8 +3937,19 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   useEffect(()=>{
     (async()=>{
       try{
-        const [cols,cycs,users]=await Promise.all([getCollabColumns(report.id),getCollabCycles(report.id),getUsers()]);
+        const [cols,cycs,users,rd]=await Promise.all([
+          getCollabColumns(report.id),
+          getCollabCycles(report.id),
+          getUsers(),
+          getReportData(report.id)
+        ]);
         setColumns(cols);setCycles(cycs);setAllUsers(users);
+        // Extract real field names from actual data rows
+        if(rd.fields&&rd.fields.length>0){
+          setDataFields(rd.fields);
+        } else if(rd.rows&&rd.rows.length>0){
+          setDataFields(Object.keys(rd.rows[0]));
+        }
       }catch(e){setMsg("Load error: "+e.message);}
       setLoading(false);
     })();
@@ -4012,7 +4024,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
     });
   };
 
-  const dataFields=report?.config?.tabs?.[0]?.fields||(report?.fields||[]);
+  // dataFields is loaded from actual report rows in useEffect above
   const statusColor={open:"#2D6A4F",closed:"#A32D2D"};
 
   return(
@@ -4182,21 +4194,22 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
 
 // ── Helper: multi-select user picker ──────────────────────────────────────────
 function UserMultiSelect({label,value=[],allUsers=[],onChange}) {
+  const safeValue=Array.isArray(value)?value:[];
   const toggleUser=(id)=>{
-    if(value.includes(id)) onChange(value.filter(x=>x!==id));
-    else onChange([...value,id]);
+    if(safeValue.includes(id)) onChange(safeValue.filter(x=>x!==id));
+    else onChange([...safeValue,id]);
   };
-  const eligible=allUsers.filter(u=>u.role!=='admin');
+  const eligible=Array.isArray(allUsers)?allUsers.filter(u=>u.role!=='admin'):[];
   return(
     <div>
       <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>{label}</label>
       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
         {eligible.map(u=>(
           <button key={u.id} onClick={()=>toggleUser(u.id)}
-            style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:value.includes(u.id)?700:400,
-              background:value.includes(u.id)?T.primary:"none",
-              color:value.includes(u.id)?T.textLt:T.text,
-              border:"1px solid "+(value.includes(u.id)?T.primary:T.border)}}>
+            style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:safeValue.includes(u.id)?700:400,
+              background:safeValue.includes(u.id)?T.primary:"none",
+              color:safeValue.includes(u.id)?T.textLt:T.text,
+              border:"1px solid "+(safeValue.includes(u.id)?T.primary:T.border)}}>
             {u.username} ({u.role})
           </button>
         ))}
