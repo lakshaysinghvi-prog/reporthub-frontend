@@ -157,3 +157,34 @@ export const testCustomCredentials = (provider, clientId, clientSecret, tenantId
 
 export const deleteCustomCredentials = (provider) =>
   api(`/api/custom-credentials/${provider}`, { method: 'DELETE' });
+
+// ── Phase 3: Collaborative Workflow ───────────────────────────────────────────
+
+export const toggleCollab = (id, enabled) =>
+  api(`/api/reports/${id}/collab-toggle`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+
+export const getCollabColumns = (id) => api(`/api/reports/${id}/collab-columns`);
+export const createCollabColumn = (id, payload) =>
+  api(`/api/reports/${id}/collab-columns`, { method: 'POST', body: JSON.stringify(payload) });
+export const updateCollabColumn = (id, colId, payload) =>
+  api(`/api/reports/${id}/collab-columns/${colId}`, { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteCollabColumn = (id, colId) =>
+  api(`/api/reports/${id}/collab-columns/${colId}`, { method: 'DELETE' });
+
+export const getCollabCycles = (id) => api(`/api/reports/${id}/collab-cycles`);
+export const openCollabCycle = (id, periodLabel, historyViewerIds) =>
+  api(`/api/reports/${id}/collab-cycles`, { method: 'POST', body: JSON.stringify({ period_label: periodLabel, history_viewer_ids: historyViewerIds }) });
+export const closeCollabCycle = (id, cycleId) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/close`, { method: 'PATCH' });
+
+export const getCollabValues = (id, cycleId) => api(`/api/reports/${id}/collab-cycles/${cycleId}/values`);
+export const upsertCollabValue = (id, cycleId, payload) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/values`, { method: 'PUT', body: JSON.stringify(payload) });
+export const submitCollabValue = (id, cycleId, row_key, col_id) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/values/submit`, { method: 'PATCH', body: JSON.stringify({ row_key, col_id }) });
+export const reviewCollabValue = (id, cycleId, row_key, col_id, action, remarks) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/values/review`, { method: 'PATCH', body: JSON.stringify({ row_key, col_id, action, remarks }) });
+
+export const getCollabAudit = (id, cycleId, row_key) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/audit${row_key ? '?row_key=' + encodeURIComponent(row_key) : ''}`);
+export const getCollabHistory = (id) => api(`/api/reports/${id}/collab-history`);

@@ -9,7 +9,11 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getCustomCredentials, saveCustomCredentials, testCustomCredentials, deleteCustomCredentials,
          getReportAccess, setReportAccess,
          getPublishedReports, getPublishedReportData,
-         getRefreshSchedule, setRefreshSchedule } from "./api.js";
+         getRefreshSchedule, setRefreshSchedule,
+         toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
+         getCollabCycles, openCollabCycle, closeCollabCycle,
+         getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
+         getCollabAudit, getCollabHistory } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -3225,6 +3229,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
   const [activeTabIdx,setActiveTabIdx]=useState(0); // active tab in multi-tab report
   const [accessPanel,setAccessPanel]=useState(null); // {id, name} of report whose access is being managed
+  const [collabPanel,setCollabPanel]=useState(null); // {id,name,config} for collab setup
+  const [collabViewPanel,setCollabViewPanel]=useState(null); // {id,name,report} for collab data view
   // Global filter store — survives Settings navigation
   const [adminGlobalFilters,setAdminGlobalFilters]=useState({});
   const [adminGlobalPivotFilters,setAdminGlobalPivotFilters]=useState({});
@@ -3460,6 +3466,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     ["data","Raw Data",!dataset],
     ["reports","Reports ("+savedReports.length+")"],
     ...(isSubAdminUser ? [["myreports","📋 My Reports"]] : []),
+    ...(!isSubAdminUser ? [["workflow","🤝 Workflow"]] : []),
   ];
   const tabBtn=(t,l,disabled)=>(
     <button key={t} onClick={()=>!disabled&&setTab(t)} style={{padding:"11px 16px",background:"none",border:"none",cursor:disabled?"not-allowed":"pointer",fontSize:13,
@@ -3796,8 +3803,19 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           onLoadReportData={onLoadReportData}
           onLogout={onLogout}/>
       )}
+      {tab==="workflow"&&!isSubAdminUser&&(
+        <WorkflowListTab
+          savedReports={savedReports}
+          currentUser={currentUser}
+          currentRole={currentRole}
+          onSetup={(r)=>setCollabPanel({id:r.id,name:r.name,report:r})}
+          onOpenView={(r)=>setCollabViewPanel({id:r.id,name:r.name,report:r})}
+          onReload={onReloadReports}/>
+      )}
       {showSettings&&<SettingsPanel currentUser={currentUser} currentRole={currentRole} onClose={()=>setShowSettings(false)}/>}
       {accessPanel&&<ReportAccessPanel reportId={accessPanel.id} reportName={accessPanel.name} onClose={()=>setAccessPanel(null)}/>}
+      {collabPanel&&<CollabSetupPanel report={collabPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>{setCollabPanel(null);onReloadReports();}}/>}
+      {collabViewPanel&&<CollabDataView report={collabViewPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>setCollabViewPanel(null)}/>}
       {saveDialog&&(
         <div style={{position:"fixed",inset:0,zIndex:600,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
           <div style={{background:T.bgCard,borderRadius:12,padding:28,width:"min(420px,90vw)",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
@@ -3815,6 +3833,694 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               <button onClick={()=>commitSave(true)} style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>
                 Overwrite
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Phase 3: Workflow List Tab ────────────────────────────────────────────────
+// Shows all reports; collab-enabled ones get an "Open Workflow" button
+function WorkflowListTab({savedReports,currentUser,currentRole,onSetup,onOpenView,onReload}) {
+  const [toggling,setToggling]=useState({});
+  const isBuilder=['admin','subadmin'].includes(currentRole);
+
+  const handleToggle=async(r)=>{
+    setToggling(t=>({...t,[r.id]:true}));
+    try{
+      await toggleCollab(r.id,!r.config?.collab_enabled);
+      onReload();
+    }catch(e){alert("Error: "+e.message);}
+    finally{setToggling(t=>({...t,[r.id]:false}));}
+  };
+
+  const collabReports=savedReports.filter(r=>r.config?.collab_enabled);
+  const otherReports=savedReports.filter(r=>!r.config?.collab_enabled);
+
+  const ReportCard=({r})=>(
+    <div key={r.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:"14px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+      <div style={{flex:1,minWidth:140}}>
+        <div style={{fontWeight:600,fontSize:14,color:T.text}}>{r.name}</div>
+        <div style={{fontSize:11,color:T.textMd,marginTop:2}}>{r.row_count||0} rows · {r.config?.collab_enabled?"🟢 Collab ON":"⚪ Standard"}</div>
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {r.config?.collab_enabled&&(
+          <>
+            {isBuilder&&<button onClick={()=>onSetup(r)}
+              style={{padding:"6px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              ⚙ Setup Columns & Cycle
+            </button>}
+            <button onClick={()=>onOpenView(r)}
+              style={{padding:"6px 14px",background:"#3B5998",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              📋 Open Workflow View
+            </button>
+          </>
+        )}
+        {isBuilder&&<button onClick={()=>handleToggle(r)} disabled={!!toggling[r.id]}
+          style={{padding:"6px 14px",background:r.config?.collab_enabled?"#A32D2D":"#2D6A4F",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,opacity:toggling[r.id]?0.5:1}}>
+          {toggling[r.id]?"...":(r.config?.collab_enabled?"Disable Collab":"Enable Collab")}
+        </button>}
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{padding:"20px 16px",maxWidth:900,margin:"0 auto"}}>
+      <div style={{fontSize:18,fontWeight:700,color:T.primary,marginBottom:6}}>🤝 Collaborative Workflow</div>
+      <div style={{fontSize:13,color:T.textMd,marginBottom:20,lineHeight:1.6}}>
+        Enable collab mode on any report to add input columns, open monthly cycles, and track approvals.
+      </div>
+      {collabReports.length>0&&(
+        <>
+          <div style={{fontSize:12,fontWeight:700,color:T.secondary,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Collab-Enabled Reports</div>
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+            {collabReports.map(r=><ReportCard key={r.id} r={r}/>)}
+          </div>
+        </>
+      )}
+      {isBuilder&&otherReports.length>0&&(
+        <>
+          <div style={{fontSize:12,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Standard Reports (collab disabled)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {otherReports.map(r=><ReportCard key={r.id} r={r}/>)}
+          </div>
+        </>
+      )}
+      {savedReports.length===0&&<div style={{color:T.textMd,fontSize:14,padding:"20px 0"}}>No reports yet. Create one in the Report Builder first.</div>}
+    </div>
+  );
+}
+
+// ── Phase 3: Collab Setup Panel (modal) ───────────────────────────────────────
+// Builder configures collab columns, row key, and manages cycles
+function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
+  const [columns,setColumns]=useState([]);
+  const [cycles,setCycles]=useState([]);
+  const [allUsers,setAllUsers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [editingCol,setEditingCol]=useState(null); // null | 'new' | {existing col}
+  const [newCycleLabel,setNewCycleLabel]=useState("");
+  const [cycleHistViewers,setCycleHistViewers]=useState([]);
+  const [openingCycle,setOpeningCycle]=useState(false);
+  const [rowKeyField,setRowKeyField]=useState(report?.config?.collab_row_key||"");
+  const [savingRowKey,setSavingRowKey]=useState(false);
+
+  // ColForm state
+  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[],ref_column:""};
+  const [colForm,setColForm]=useState(blankForm);
+
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const [cols,cycs,users]=await Promise.all([getCollabColumns(report.id),getCollabCycles(report.id),getUsers()]);
+        setColumns(cols);setCycles(cycs);setAllUsers(users);
+      }catch(e){setMsg("Load error: "+e.message);}
+      setLoading(false);
+    })();
+  },[report.id]);
+
+  const saveRowKey=async()=>{
+    setSavingRowKey(true);
+    try{
+      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null};
+      await updateReportConfig(report.id,newCfg,report.name);
+      setMsg("✓ Row key saved");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSavingRowKey(false);
+  };
+
+  const openCycle=async()=>{
+    if(!newCycleLabel.trim())return setMsg("Period label required (e.g. May 2026)");
+    setOpeningCycle(true);
+    try{
+      const c=await openCollabCycle(report.id,newCycleLabel.trim(),cycleHistViewers);
+      setCycles(prev=>[c,...prev]);setNewCycleLabel("");setCycleHistViewers([]);
+      setMsg("✓ Cycle opened: "+c.period_label);
+    }catch(e){setMsg("Error: "+e.message);}
+    setOpeningCycle(false);
+  };
+
+  const closeCycle=async(cycleId)=>{
+    if(!window.confirm("Close this cycle? All values will be frozen and it will move to History."))return;
+    setSaving(true);
+    try{
+      const c=await closeCollabCycle(report.id,cycleId);
+      setCycles(prev=>prev.map(x=>x.id===c.id?c:x));
+      setMsg("✓ Cycle closed");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
+  const saveCol=async()=>{
+    if(!colForm.label.trim())return setMsg("Column label required");
+    setSaving(true);
+    try{
+      const payload={...colForm,col_order:columns.length};
+      let saved;
+      if(editingCol&&editingCol.id){
+        saved=await updateCollabColumn(report.id,editingCol.id,payload);
+        setColumns(prev=>prev.map(c=>c.id===saved.id?saved:c));
+      }else{
+        saved=await createCollabColumn(report.id,payload);
+        setColumns(prev=>[...prev,saved]);
+      }
+      setEditingCol(null);setColForm(blankForm);setMsg("✓ Column saved");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
+  const deleteCol=async(colId)=>{
+    if(!window.confirm("Delete this column? All values for this column will be lost."))return;
+    try{
+      await deleteCollabColumn(report.id,colId);
+      setColumns(prev=>prev.filter(c=>c.id!==colId));
+      setMsg("✓ Column deleted");
+    }catch(e){setMsg("Error: "+e.message);}
+  };
+
+  const openEdit=(col)=>{
+    setEditingCol(col);
+    setColForm({
+      label:col.label,col_type:col.col_type,
+      inputter_ids:Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]'),
+      reviewer_ids:Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]'),
+      ref_column:col.ref_column||""
+    });
+  };
+
+  const dataFields=report?.config?.tabs?.[0]?.fields||(report?.fields||[]);
+  const statusColor={open:"#2D6A4F",closed:"#A32D2D"};
+
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",alignItems:"flex-start",justifyContent:"center",overflowY:"auto",padding:"20px 8px"}}>
+      <div style={{background:T.bgPage,borderRadius:14,width:"min(860px,98vw)",boxShadow:"0 16px 60px rgba(44,24,16,0.4)",marginBottom:20}}>
+        {/* Header */}
+        <div style={{background:T.bgHeader,borderRadius:"14px 14px 0 0",padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{color:T.textLt,fontWeight:700,fontSize:15}}>⚙ Workflow Setup</div>
+            <div style={{color:"rgba(245,239,230,0.7)",fontSize:12,marginTop:2}}>{report.name}</div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
+        </div>
+
+        <div style={{padding:"20px"}}>
+          {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",border:"1px solid #A5D6A7",borderRadius:7,padding:"8px 14px",fontSize:13,marginBottom:16}}>{msg}</div>}
+          {loading&&<div style={{color:T.textMd,padding:20}}>Loading…</div>}
+
+          {/* ── Row Key ── */}
+          {!loading&&(
+            <div style={{marginBottom:20,background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:8}}>Row Identifier (Row Key)</div>
+              <div style={{fontSize:12,color:T.textMd,marginBottom:10}}>Select the column that uniquely identifies each row (e.g. Vendor Code, Account ID). This is used to link input values to specific rows.</div>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <select value={rowKeyField} onChange={e=>setRowKeyField(e.target.value)}
+                  style={{flex:1,minWidth:140,padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13}}>
+                  <option value="">— Select a field —</option>
+                  {(report?.config?.tabs?.[0]?.fields||[]).map(f=><option key={f} value={f}>{f}</option>)}
+                </select>
+                <button onClick={saveRowKey} disabled={savingRowKey}
+                  style={{padding:"7px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:savingRowKey?"wait":"pointer",fontSize:12,fontWeight:700,opacity:savingRowKey?0.6:1}}>
+                  {savingRowKey?"Saving…":"Save Row Key"}
+                </button>
+              </div>
+              {rowKeyField&&<div style={{marginTop:6,fontSize:12,color:T.success}}>✓ Current row key: <strong>{rowKeyField}</strong></div>}
+            </div>
+          )}
+
+          {/* ── Collab Columns ── */}
+          {!loading&&(
+            <div style={{marginBottom:24}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <div style={{fontWeight:700,color:T.primary,fontSize:14}}>Collaboration Columns</div>
+                {!editingCol&&<button onClick={()=>{setEditingCol('new');setColForm(blankForm);}}
+                  style={{padding:"6px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                  + Add Column
+                </button>}
+              </div>
+              {/* Column form */}
+              {editingCol&&(
+                <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:16,marginBottom:14}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                    <div>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Column Label *</label>
+                      <input value={colForm.label} onChange={e=>setColForm(f=>({...f,label:e.target.value}))}
+                        placeholder="e.g. Recommended Amount"
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,boxSizing:"border-box",marginTop:4}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Type</label>
+                      <select value={colForm.col_type} onChange={e=>setColForm(f=>({...f,col_type:e.target.value}))}
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,marginTop:4}}>
+                        <option value="input">Input Only (no approval)</option>
+                        <option value="workflow">Workflow (submit → approve/reject/hold)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{marginBottom:12}}>
+                    <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Reference Column (optional — shown alongside for context)</label>
+                    <select value={colForm.ref_column} onChange={e=>setColForm(f=>({...f,ref_column:e.target.value}))}
+                      style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,marginTop:4}}>
+                      <option value="">— None —</option>
+                      {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
+                    </select>
+                  </div>
+                  <UserMultiSelect label="Inputters (who can enter values)" value={colForm.inputter_ids}
+                    allUsers={allUsers} onChange={v=>setColForm(f=>({...f,inputter_ids:v}))}/>
+                  {colForm.col_type==="workflow"&&(
+                    <div style={{marginTop:10}}>
+                      <UserMultiSelect label="Reviewers (who can approve/reject/hold)" value={colForm.reviewer_ids}
+                        allUsers={allUsers} onChange={v=>setColForm(f=>({...f,reviewer_ids:v}))}/>
+                    </div>
+                  )}
+                  <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+                    <button onClick={()=>{setEditingCol(null);setColForm(blankForm);}}
+                      style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>Cancel</button>
+                    <button onClick={saveCol} disabled={saving}
+                      style={{padding:"7px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:saving?"wait":"pointer",fontSize:12,fontWeight:700,opacity:saving?0.6:1}}>
+                      {saving?"Saving…":"Save Column"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {/* Column list */}
+              {columns.length===0&&!editingCol&&<div style={{color:T.textMd,fontSize:13,padding:"10px 0"}}>No collab columns defined yet.</div>}
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {columns.map(col=>(
+                  <div key={col.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{flex:1}}>
+                      <span style={{fontWeight:600,fontSize:13,color:T.text}}>{col.label}</span>
+                      <span style={{marginLeft:8,fontSize:11,background:col.col_type==="workflow"?"#534AB7":"#185FA5",color:"#fff",padding:"2px 7px",borderRadius:10}}>
+                        {col.col_type==="workflow"?"Workflow":"Input Only"}
+                      </span>
+                      {col.ref_column&&<span style={{marginLeft:6,fontSize:11,color:T.textMd}}>ref: {col.ref_column}</span>}
+                    </div>
+                    <button onClick={()=>openEdit(col)} style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:11}}>Edit</button>
+                    <button onClick={()=>deleteCol(col.id)} style={{padding:"4px 10px",background:"none",border:"1px solid #A32D2D",color:"#A32D2D",borderRadius:6,cursor:"pointer",fontSize:11}}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Cycle Management ── */}
+          {!loading&&(
+            <div>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:12}}>Monthly Cycles</div>
+              {/* Open new cycle */}
+              {!cycles.some(c=>c.status==="open")&&(
+                <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14,marginBottom:14}}>
+                  <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>Open New Cycle</div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+                    <div style={{flex:1,minWidth:160}}>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Period Label *</label>
+                      <input value={newCycleLabel} onChange={e=>setNewCycleLabel(e.target.value)}
+                        placeholder="e.g. May 2026"
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,boxSizing:"border-box",marginTop:4}}/>
+                    </div>
+                    <div style={{flex:2,minWidth:200}}>
+                      <UserMultiSelect label="History viewers (can see closed cycle)" value={cycleHistViewers}
+                        allUsers={allUsers} onChange={setCycleHistViewers}/>
+                    </div>
+                    <button onClick={openCycle} disabled={openingCycle}
+                      style={{padding:"8px 18px",background:T.accent,color:T.textLt,border:"none",borderRadius:7,cursor:openingCycle?"wait":"pointer",fontSize:13,fontWeight:700,height:36,marginBottom:0,opacity:openingCycle?0.6:1}}>
+                      {openingCycle?"Opening…":"Open Cycle"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {/* Cycle list */}
+              {cycles.length===0&&<div style={{color:T.textMd,fontSize:13,padding:"8px 0"}}>No cycles yet.</div>}
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {cycles.map(c=>(
+                  <div key={c.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:statusColor[c.status]||T.textMd,flexShrink:0}}/>
+                    <div style={{flex:1}}>
+                      <span style={{fontWeight:600,fontSize:13,color:T.text}}>{c.period_label}</span>
+                      <span style={{marginLeft:8,fontSize:11,color:statusColor[c.status],fontWeight:600}}>{c.status.toUpperCase()}</span>
+                      {c.closed_at&&<span style={{marginLeft:8,fontSize:11,color:T.textMd}}>Closed {new Date(c.closed_at).toLocaleDateString()}</span>}
+                    </div>
+                    {c.status==="open"&&(
+                      <button onClick={()=>closeCycle(c.id)} disabled={saving}
+                        style={{padding:"5px 12px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                        Close Cycle
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Helper: multi-select user picker ──────────────────────────────────────────
+function UserMultiSelect({label,value=[],allUsers=[],onChange}) {
+  const toggleUser=(id)=>{
+    if(value.includes(id)) onChange(value.filter(x=>x!==id));
+    else onChange([...value,id]);
+  };
+  const eligible=allUsers.filter(u=>u.role!=='admin');
+  return(
+    <div>
+      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>{label}</label>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
+        {eligible.map(u=>(
+          <button key={u.id} onClick={()=>toggleUser(u.id)}
+            style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:value.includes(u.id)?700:400,
+              background:value.includes(u.id)?T.primary:"none",
+              color:value.includes(u.id)?T.textLt:T.text,
+              border:"1px solid "+(value.includes(u.id)?T.primary:T.border)}}>
+            {u.username} ({u.role})
+          </button>
+        ))}
+        {eligible.length===0&&<span style={{color:T.textMd,fontSize:12}}>No users available</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 3: Collab Data View (modal) ────────────────────────────────────────
+// Shows flat table of data rows + collab columns; inputters can enter values, reviewers can approve
+function CollabDataView({report,currentUser,currentRole,onClose}) {
+  const [columns,setColumns]=useState([]);
+  const [cycles,setCycles]=useState([]);
+  const [activeCycle,setActiveCycle]=useState(null);
+  const [values,setValues]=useState({}); // {rowKey_colId: value_obj}
+  const [dataRows,setDataRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState({});
+  const [draftMap,setDraftMap]=useState({}); // {rowKey_colId: {value,remarks}}
+  const [auditRow,setAuditRow]=useState(null); // rowKey to show audit for
+  const [auditData,setAuditData]=useState([]);
+  const [reviewModal,setReviewModal]=useState(null); // {rowKey,col_id,colLabel,currentVal}
+  const [reviewRemarks,setReviewRemarks]=useState("");
+  const [msg,setMsg]=useState("");
+  const [histMode,setHistMode]=useState(false);
+
+  // Determine user's roles in each column
+  const myId=currentUser?.id;
+  const isBuilder=['admin','subadmin','subadmin_user'].includes(currentRole);
+
+  const rowKey=report?.config?.collab_row_key; // field name that uniquely identifies a row
+
+  useEffect(()=>{loadAll();},[report.id]);
+
+  const loadAll=async()=>{
+    setLoading(true);
+    try{
+      const [cols,cycs,rd]=await Promise.all([
+        getCollabColumns(report.id),
+        getCollabCycles(report.id),
+        getReportData(report.id)
+      ]);
+      setColumns(cols);
+      setCycles(cycs);
+      setDataRows(rd.rows||[]);
+      const open=cycs.find(c=>c.status==="open");
+      if(open){
+        setActiveCycle(open);
+        await loadValues(open.id);
+      }
+    }catch(e){setMsg("Error: "+e.message);}
+    setLoading(false);
+  };
+
+  const loadValues=async(cycleId)=>{
+    const vals=await getCollabValues(report.id,cycleId);
+    const map={};
+    vals.forEach(v=>{ map[v.row_key+"__"+v.col_id]=v; });
+    setValues(map);
+  };
+
+  const switchCycle=async(c)=>{
+    setActiveCycle(c);
+    setValues({});
+    setDraftMap({});
+    if(c){await loadValues(c.id);}
+  };
+
+  const draftKey=(rk,cid)=>rk+"__"+cid;
+
+  const canInput=(col)=>{
+    if(isBuilder)return true;
+    const ids=Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]');
+    return ids.includes(myId);
+  };
+  const canReview=(col)=>{
+    if(['admin','subadmin'].includes(currentRole))return true;
+    const ids=Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]');
+    return ids.includes(myId);
+  };
+
+  const saveDraft=async(rk,col)=>{
+    const dk=draftKey(rk,col.id);
+    const draft=draftMap[dk]||{};
+    const val=draft.value!==undefined?draft.value:null;
+    if(val===null||val==="")return; // nothing to save
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:draft.remarks||null});
+      setValues(v=>({...v,[dk]:saved}));
+      setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
+      setMsg("✓ Saved");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const submitValue=async(rk,col)=>{
+    const dk=draftKey(rk,col.id);
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      const saved=await submitCollabValue(report.id,activeCycle.id,rk,col.id);
+      setValues(v=>({...v,[dk]:saved}));
+      setMsg("✓ Submitted for review");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const doReview=async(action)=>{
+    if(!reviewModal)return;
+    const {rowKey:rk,col_id}=reviewModal;
+    const dk=draftKey(rk,col_id);
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      const saved=await reviewCollabValue(report.id,activeCycle.id,rk,col_id,action,reviewRemarks);
+      setValues(v=>({...v,[dk]:saved}));
+      setReviewModal(null);setReviewRemarks("");
+      setMsg("✓ "+action.charAt(0).toUpperCase()+action.slice(1));setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const openAudit=async(rk)=>{
+    setAuditRow(rk);
+    if(activeCycle){
+      const a=await getCollabAudit(report.id,activeCycle.id,rk);
+      setAuditData(a);
+    }
+  };
+
+  const statusBadge=(status)=>{
+    const map={pending:{bg:"#FFF3CD",color:"#856404"},submitted:{bg:"#CCE5FF",color:"#004085"},
+      approved:{bg:"#D4EDDA",color:"#155724"},rejected:{bg:"#F8D7DA",color:"#721C24"},
+      hold:{bg:"#E2D9F3",color:"#4A2080"}};
+    const s=map[status]||{bg:T.bgAlt,color:T.textMd};
+    return<span style={{fontSize:10,fontWeight:700,background:s.bg,color:s.color,padding:"2px 6px",borderRadius:8,textTransform:"uppercase"}}>{status||"—"}</span>;
+  };
+
+  // Only show rows where user has some collab column access (or builder sees all)
+  const visibleRows=dataRows.filter(row=>{
+    if(isBuilder)return true;
+    return columns.some(col=>canInput(col)||canReview(col));
+  });
+
+  const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
+  const allCycles=[...cycles];
+
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      {/* Header */}
+      <div style={{background:T.bgHeader,padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <div>
+          <div style={{color:T.textLt,fontWeight:700,fontSize:15}}>📋 Workflow View — {report.name}</div>
+          {activeCycle&&<div style={{color:"rgba(245,239,230,0.7)",fontSize:12,marginTop:2}}>
+            Cycle: <strong style={{color:T.textLt}}>{activeCycle.period_label}</strong>
+            <span style={{marginLeft:8,fontSize:11,color:activeCycle.status==="open"?"#88FFAA":"#FF9999",fontWeight:700}}>{activeCycle.status.toUpperCase()}</span>
+          </div>}
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {allCycles.length>1&&(
+            <select value={activeCycle?.id||""} onChange={e=>{const c=allCycles.find(x=>String(x.id)===e.target.value);switchCycle(c||null);}}
+              style={{padding:"5px 10px",borderRadius:6,border:"none",fontSize:12,background:"rgba(255,255,255,0.15)",color:T.textLt}}>
+              {allCycles.map(c=><option key={c.id} value={c.id} style={{background:T.bgHeader}}>{cycleLabel(c)}</option>)}
+            </select>
+          )}
+          <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer"}}>✕</button>
+        </div>
+      </div>
+
+      {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",padding:"6px 20px",fontSize:13,flexShrink:0}}>{msg}</div>}
+
+      {loading&&<div style={{padding:30,color:T.textMd,fontSize:14}}>Loading…</div>}
+
+      {!loading&&!activeCycle&&(
+        <div style={{padding:30,color:T.textMd,fontSize:14}}>
+          No open cycle found. Ask the report builder to open a cycle for this period.
+          {cycles.length>0&&<div style={{marginTop:8}}>You can still view past cycles using the dropdown above.</div>}
+        </div>
+      )}
+
+      {/* Main table */}
+      {!loading&&(activeCycle||cycles.length>0)&&columns.length>0&&(
+        <div style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
+          {!rowKey&&isBuilder&&<div style={{background:"#FFF3CD",color:"#856404",padding:"8px 16px",fontSize:12}}>
+            ⚠ No Row Key set. Go to Report Builder → config to set <code>collab_row_key</code> in the report's collab settings.
+          </div>}
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
+                <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:120}}>
+                  {rowKey||"Row"}
+                </th>
+                {columns.map(col=>(
+                  <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:160}}>
+                    <div>{col.label}</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>
+                      {col.col_type==="workflow"?"Workflow":"Input Only"}
+                      {col.ref_column&&<span> · ref: {col.ref_column}</span>}
+                    </div>
+                  </th>
+                ))}
+                <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,width:60}}>Trail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row,ri)=>{
+                const rk=rowKey?String(row[rowKey]||""):String(ri);
+                return(
+                  <tr key={rk} style={{background:ri%2===0?T.bgCard:T.bgAlt,borderBottom:"1px solid "+T.border}}>
+                    <td style={{padding:"8px 14px",fontWeight:500,color:T.text}}>{rowKey?row[rowKey]:ri+1}</td>
+                    {columns.map(col=>{
+                      const dk=draftKey(rk,col.id);
+                      const existing=values[dk];
+                      const draft=draftMap[dk];
+                      const displayVal=draft?.value!==undefined?draft.value:(existing?.value!==undefined?existing.value:"");
+                      const isSaving=saving[dk];
+                      const cycleClosed=activeCycle?.status==="closed";
+                      const canI=!cycleClosed&&canInput(col);
+                      const canR=!cycleClosed&&col.col_type==="workflow"&&canReview(col);
+                      const refVal=col.ref_column?row[col.ref_column]:null;
+                      return(
+                        <td key={col.id} style={{padding:"6px 14px",verticalAlign:"top"}}>
+                          {refVal!==null&&refVal!==undefined&&<div style={{fontSize:10,color:T.textMd,marginBottom:2}}>Ref: {refVal}</div>}
+                          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                            {canI?(
+                              <input type="number" value={displayVal} placeholder="0"
+                                onChange={e=>setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:e.target.value}}))}
+                                onBlur={()=>{if(draft?.value!==undefined)saveDraft(rk,col);}}
+                                disabled={isSaving}
+                                style={{width:90,padding:"4px 8px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,background:draft?.value!==undefined?"#FFFDE7":T.bgCard}}/>
+                            ):(
+                              <span style={{fontSize:13,color:T.text,minWidth:60}}>{existing?.value!==undefined&&existing.value!==null?existing.value:"—"}</span>
+                            )}
+                            {existing&&statusBadge(existing.status)}
+                          </div>
+                          {canI&&draft?.value!==undefined&&(
+                            <div style={{marginTop:4,display:"flex",gap:4}}>
+                              <input value={draft.remarks||""} placeholder="Remarks (opt)"
+                                onChange={e=>setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),remarks:e.target.value}}))}
+                                style={{flex:1,padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,fontSize:11}}/>
+                              <button onClick={()=>saveDraft(rk,col)} disabled={isSaving}
+                                style={{padding:"3px 8px",background:T.accent,color:T.textLt,border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>
+                                {isSaving?"…":"Save"}
+                              </button>
+                            </div>
+                          )}
+                          {col.col_type==="workflow"&&canI&&existing?.status==="pending"&&(
+                            <button onClick={()=>submitValue(rk,col)} disabled={isSaving}
+                              style={{marginTop:4,padding:"3px 10px",background:"#185FA5",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
+                              Submit for Review
+                            </button>
+                          )}
+                          {canR&&existing?.status==="submitted"&&(
+                            <button onClick={()=>{setReviewModal({rowKey:rk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");}}
+                              style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
+                              Review
+                            </button>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td style={{padding:"8px 14px",textAlign:"center"}}>
+                      <button onClick={()=>openAudit(rk)} title="View audit trail"
+                        style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
+                        🕵
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {visibleRows.length===0&&(
+                <tr><td colSpan={columns.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!loading&&columns.length===0&&(
+        <div style={{padding:30,color:T.textMd,fontSize:14}}>No collab columns defined yet. Use ⚙ Setup Columns & Cycle in the Workflow tab.</div>
+      )}
+
+      {/* Review Modal */}
+      {reviewModal&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(400px,90vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:4}}>Review: {reviewModal.colLabel}</div>
+            <div style={{fontSize:13,color:T.textMd,marginBottom:12}}>Value: <strong>{reviewModal.currentVal}</strong></div>
+            <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Remarks (optional)</label>
+            <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
+              rows={3} placeholder="Add remarks for inputter..."
+              style={{width:"100%",padding:"8px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:13,marginTop:4,boxSizing:"border-box",resize:"vertical"}}/>
+            <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              <button onClick={()=>setReviewModal(null)} style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>Cancel</button>
+              <button onClick={()=>doReview("hold")} style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>Hold</button>
+              <button onClick={()=>doReview("rejected")} style={{padding:"7px 14px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>Reject</button>
+              <button onClick={()=>doReview("approved")} style={{padding:"7px 14px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700}}>Approve</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Trail Panel */}
+      {auditRow&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:0,width:"min(600px,95vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{background:T.bgHeader,borderRadius:"12px 12px 0 0",padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:T.textLt,fontWeight:700,fontSize:14}}>🕵 Audit Trail — {auditRow}</span>
+              <button onClick={()=>setAuditRow(null)} style={{background:"none",border:"none",color:T.textLt,fontSize:18,cursor:"pointer"}}>✕</button>
+            </div>
+            <div style={{overflowY:"auto",flex:1,padding:14}}>
+              {auditData.length===0&&<div style={{color:T.textMd,fontSize:13}}>No audit entries for this row.</div>}
+              {auditData.map(a=>(
+                <div key={a.id} style={{borderBottom:"1px solid "+T.border,padding:"8px 0",fontSize:12}}>
+                  <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontWeight:700,color:T.text}}>{a.username||"(deleted user)"}</span>
+                    <span style={{background:T.bgAlt,color:T.textMd,padding:"2px 7px",borderRadius:8,fontSize:10,textTransform:"uppercase"}}>{a.action}</span>
+                    {a.value!==null&&a.value!==undefined&&<span style={{color:T.numColor,fontWeight:600}}>{a.value}</span>}
+                    <span style={{color:T.textMd,marginLeft:"auto"}}>{new Date(a.created_at).toLocaleString()}</span>
+                  </div>
+                  {a.remarks&&<div style={{color:T.textMd,marginTop:3,fontStyle:"italic"}}>{a.remarks}</div>}
+                  {a.col_id&&<div style={{color:T.textMd,fontSize:11}}>Column ID: {a.col_id}</div>}
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -4024,9 +4730,10 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
 }
 
 // ── User view ──────────────────────────────────────────────────────────────────
-function UserView({onLogout,savedReports,onLoadReportData}) {
+function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRole}) {
   const isMobileView=useViewport();
   const [activeId,setActiveId]=useState(null);
+  const [collabViewReport,setCollabViewReport]=useState(null);
   const [dataLoading,setDataLoading]=useState(false);
   const [refreshing,setRefreshing]=useState(false); // background refresh (doesn't blank report)
   const [lastRefreshed,setLastRefreshed]=useState(null);
@@ -4209,7 +4916,7 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
     </div>
   );
 
-  return(
+  return(<>
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="User" onLogout={onLogout}>
         {publishedReports.length>0&&(
@@ -4252,6 +4959,12 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
                 {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields
                 {lastRefreshed&&<span style={{marginLeft:8,color:T.success}}>· Refreshed {lastRefreshed.toLocaleTimeString()}</span>}
               </div>
+              {currentMeta.config?.collab_enabled&&(
+                <button onClick={()=>setCollabViewReport(currentMeta)}
+                  style={{padding:"6px 14px",background:"#3B5998",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                  🤝 Workflow
+                </button>
+              )}
               {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
                 <button onClick={()=>refreshFromSource(false)} disabled={refreshing}
                   title="Pull latest data from Google Drive / OneDrive"
@@ -4331,7 +5044,8 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
         </div>
       ):(!dataLoading&&<div style={{padding:40,textAlign:"center",fontSize:13,color:T.textMd}}>Select a report above.</div>)}
     </div>
-  );
+    {collabViewReport&&<CollabDataView report={collabViewReport} currentUser={currentUser} currentRole={currentRole||"user"} onClose={()=>setCollabViewReport(null)}/>}
+  </>);
 }
 
 
@@ -4801,13 +5515,17 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishe
 // ── Root ───────────────────────────────────────────────────────────────────────
 // ── Helper: parse API report metadata into local shape ────────────────────────
 function parseReportMeta(r) {
+  const cfg = typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{});
+  // Merge top-level collab_enabled DB column into config so WorkflowListTab can read it
+  if (r.collab_enabled !== undefined) cfg.collab_enabled = !!r.collab_enabled;
   return {
     id: r.id,
     name: r.name,
     rows: r.row_count||0,
     fields: r.field_count||0,
+    row_count: r.row_count||0,
     savedAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
-    config: typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{}),
+    config: cfg,
     cardFields: (()=>{const cf=typeof r.card_fields==="string"?JSON.parse(r.card_fields):(r.card_fields||[]);
       // Normalise: legacy data may have strings, new data has {field,agg} objects
       return cf.map(x=>typeof x==="string"?{field:x,agg:"sum"}:x);
@@ -5022,6 +5740,8 @@ export default function App() {
                 onLogout={doLogout}
                 savedReports={savedReports}
                 onLoadReportData={loadReportData}
+                currentUser={currentUser}
+                currentRole={localStorage.getItem("rh_role")||"user"}
                 isGuest={false}/>}
     </ErrorBoundary>
   );
