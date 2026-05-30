@@ -4279,17 +4279,24 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [columns,setColumns]=useState([]);
   const [cycles,setCycles]=useState([]);
   const [activeCycle,setActiveCycle]=useState(null);
-  const [values,setValues]=useState({}); // {rowKey_colId: value_obj}
+  const [values,setValues]=useState({});
   const [dataRows,setDataRows]=useState([]);
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState({});
-  const [draftMap,setDraftMap]=useState({}); // {rowKey_colId: {value,remarks}}
-  const [auditRow,setAuditRow]=useState(null); // rowKey to show audit for
+  const [draftMap,setDraftMap]=useState({});
+  const [auditRow,setAuditRow]=useState(null);
   const [auditData,setAuditData]=useState([]);
-  const [reviewModal,setReviewModal]=useState(null); // {rowKey,col_id,colLabel,currentVal}
+  const [reviewModal,setReviewModal]=useState(null);
   const [reviewRemarks,setReviewRemarks]=useState("");
   const [msg,setMsg]=useState("");
   const [histMode,setHistMode]=useState(false);
+  // Filter/sort/display state
+  const [search,setSearch]=useState("");
+  const [sortCol,setSortCol]=useState(null); // {field, dir: 'asc'|'desc'}
+  const [showNonZeroOnly,setShowNonZeroOnly]=useState(false);
+  const [numFmt,setNumFmt]=useState("units"); // 'units'|'L'|'Cr'
+  const [page,setPage]=useState(0);
+  const PAGE_SIZE=100;
 
   // Determine user's roles in each column
   const myId=currentUser?.id;
@@ -4403,11 +4410,57 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     return<span style={{fontSize:10,fontWeight:700,background:s.bg,color:s.color,padding:"2px 6px",borderRadius:8,textTransform:"uppercase"}}>{status||"—"}</span>;
   };
 
-  // Only show rows where user has some collab column access (or builder sees all)
-  const visibleRows=dataRows.filter(row=>{
+  // Number formatter for display columns
+  const fmtNum=(v)=>{
+    if(v===null||v===undefined||v==="")return "—";
+    const n=Number(v);
+    if(isNaN(n))return String(v);
+    if(numFmt==="Cr") return (n/1e7).toLocaleString('en-IN',{maximumFractionDigits:2})+" Cr";
+    if(numFmt==="L")  return (n/1e5).toLocaleString('en-IN',{maximumFractionDigits:2})+" L";
+    return n.toLocaleString('en-IN',{maximumFractionDigits:2});
+  };
+
+  // Filter → search → sort → paginate
+  const accessFiltered=dataRows.filter(row=>{
     if(isBuilder)return true;
     return columns.some(col=>canInput(col)||canReview(col));
   });
+
+  const searchFiltered=search.trim()
+    ? accessFiltered.filter(row=>{
+        const q=search.trim().toLowerCase();
+        // Search in row key + all display fields
+        const fields=[rowKey,...displayFields].filter(Boolean);
+        return fields.some(f=>String(row[f]||"").toLowerCase().includes(q));
+      })
+    : accessFiltered;
+
+  const nonZeroFiltered=showNonZeroOnly
+    ? searchFiltered.filter((row,ri)=>{
+        const rk=rowKey?String(row[rowKey]||""):String(ri);
+        return columns.some(col=>{
+          const v=values[rk+"__"+col.id];
+          return v&&v.value!==null&&v.value!==undefined&&Number(v.value)!==0;
+        });
+      })
+    : searchFiltered;
+
+  const sorted=sortCol
+    ? [...nonZeroFiltered].sort((a,b)=>{
+        const av=a[sortCol.field],bv=b[sortCol.field];
+        const an=Number(av),bn=Number(bv);
+        const cmp=!isNaN(an)&&!isNaN(bn)?an-bn:String(av||"").localeCompare(String(bv||""));
+        return sortCol.dir==="asc"?cmp:-cmp;
+      })
+    : nonZeroFiltered;
+
+  const totalPages=Math.ceil(sorted.length/PAGE_SIZE);
+  const visibleRows=sorted.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
+
+  const toggleSort=(field)=>{
+    setPage(0);
+    setSortCol(s=>s&&s.field===field?{field,dir:s.dir==="asc"?"desc":"asc"}:{field,dir:"asc"});
+  };
 
   const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
   const allCycles=[...cycles];
@@ -4436,7 +4489,45 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
       {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",padding:"6px 20px",fontSize:13,flexShrink:0}}>{msg}</div>}
 
-      {loading&&<div style={{padding:30,color:T.textMd,fontSize:14}}>Loading…</div>}
+      {/* Filter toolbar */}
+      {!loading&&dataRows.length>0&&(
+        <div style={{background:T.bgAlt,borderBottom:"1px solid "+T.border,padding:"8px 14px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",flexShrink:0}}>
+          {/* Search */}
+          <input value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} placeholder="🔍 Search by vendor / row key…"
+            style={{padding:"5px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,minWidth:200,flex:1,maxWidth:300,outline:"none"}}/>
+          {/* Non-zero toggle */}
+          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
+            <input type="checkbox" checked={showNonZeroOnly} onChange={e=>{setShowNonZeroOnly(e.target.checked);setPage(0);}}/>
+            Has values only
+          </label>
+          {/* Number format */}
+          <div style={{display:"flex",gap:0,border:"1px solid "+T.border,borderRadius:7,overflow:"hidden"}}>
+            {[{k:"units",l:"Units"},{k:"L",l:"Lakhs"},{k:"Cr",l:"Crores"}].map(f=>(
+              <button key={f.k} onClick={()=>setNumFmt(f.k)}
+                style={{padding:"4px 10px",border:"none",background:numFmt===f.k?T.primary:T.bgCard,
+                  color:numFmt===f.k?T.textLt:T.textMd,cursor:"pointer",fontSize:11,fontWeight:numFmt===f.k?700:400}}>
+                {f.l}
+              </button>
+            ))}
+          </div>
+          {/* Row count */}
+          <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
+            {sorted.length.toLocaleString()} rows
+            {totalPages>1&&` · Page ${page+1}/${totalPages}`}
+          </span>
+          {/* Pagination */}
+          {totalPages>1&&(
+            <div style={{display:"flex",gap:4}}>
+              <button disabled={page===0} onClick={()=>setPage(p=>p-1)}
+                style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹ Prev</button>
+              <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)}
+                style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>Next ›</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading&&<div style={{padding:30,color:T.textMd,fontSize:14,textAlign:"center"}}>⏳ Loading workflow data…</div>}
 
       {!loading&&!activeCycle&&(
         <div style={{padding:30,color:T.textMd,fontSize:14}}>
@@ -4451,14 +4542,21 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
-                <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180}}>
-                  {rowKey||<span style={{color:T.textMd,fontStyle:"italic",fontWeight:400,fontSize:11}}>Row — set identifier in ⚙ Setup</span>}
+                <th onClick={rowKey?()=>toggleSort(rowKey):undefined}
+                  style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180,cursor:rowKey?"pointer":"default",userSelect:"none"}}>
+                  {rowKey
+                    ?<span style={{display:"flex",alignItems:"center",gap:4}}>{rowKey}<span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rowKey?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span></span>
+                    :<span style={{color:T.textMd,fontStyle:"italic",fontWeight:400,fontSize:11}}>Row — set identifier in ⚙ Setup</span>}
                 </th>
                 {displayFields.map((rf,rfi)=>(
-                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
-                    borderBottom:"2px solid "+T.border,minWidth:130,
-                    borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
-                    <div>{rf}</div>
+                  <th key={rf} onClick={()=>toggleSort(rf)}
+                    style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                      borderBottom:"2px solid "+T.border,minWidth:130,cursor:"pointer",userSelect:"none",
+                      borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
+                    <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:4}}>
+                      {rf}
+                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                    </div>
                     <div style={{fontWeight:400,fontSize:10,color:T.textMd,letterSpacing:0.3}}>view only</div>
                   </th>
                 ))}
@@ -4489,9 +4587,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                         background:rowBg,whiteSpace:"nowrap",
                         borderLeft:rfi===0?"2px solid "+T.borderDk:"none",
                         opacity:0.85}}>
-                        {row[rf]!==null&&row[rf]!==undefined
-                          ?(isNaN(Number(row[rf]))?row[rf]:Number(row[rf]).toLocaleString('en-IN',{maximumFractionDigits:2}))
-                          :"—"}
+                        {fmtNum(row[rf])}
                       </td>
                     ))}
                     {displayFields.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
