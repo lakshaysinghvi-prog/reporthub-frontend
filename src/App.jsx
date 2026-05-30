@@ -4293,10 +4293,15 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   // Filter/sort/display state
   const [search,setSearch]=useState("");
   const [sortCol,setSortCol]=useState(null); // {field, dir: 'asc'|'desc'}
+  const sortColRef=useRef(null); // always-current ref to avoid stale closure
   const [showNonZeroOnly,setShowNonZeroOnly]=useState(false);
   const [numFmt,setNumFmt]=useState("units"); // 'units'|'L'|'Cr'
   const [page,setPage]=useState(0);
   const PAGE_SIZE=100;
+  const [colFilters,setColFilters]=useState({}); // {field: Set<string>}
+  const [filterOpen,setFilterOpen]=useState(null); // field name of open filter dropdown
+  const [summarize,setSummarize]=useState(false); // group rows by rowKey
+  const [expanded,setExpanded]=useState(new Set()); // expanded group keys
 
   // Determine user's roles in each column
   const myId=currentUser?.id;
@@ -4306,6 +4311,13 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const displayFields=Array.isArray(report?.config?.collab_display_fields)?report.config.collab_display_fields:[];
 
   useEffect(()=>{loadAll();},[report.id]);
+  // Close filter dropdown on outside click
+  useEffect(()=>{
+    if(!filterOpen)return;
+    const close=()=>setFilterOpen(null);
+    document.addEventListener("click",close);
+    return()=>document.removeEventListener("click",close);
+  },[filterOpen]);
 
   const loadAll=async()=>{
     setLoading(true);
@@ -4420,47 +4432,99 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     return n.toLocaleString('en-IN',{maximumFractionDigits:2});
   };
 
-  // Filter → search → sort → paginate
-  const accessFiltered=dataRows.filter(row=>{
-    if(isBuilder)return true;
-    return columns.some(col=>canInput(col)||canReview(col));
-  });
-
-  const searchFiltered=search.trim()
-    ? accessFiltered.filter(row=>{
-        const q=search.trim().toLowerCase();
-        // Search in row key + all display fields
-        const fields=[rowKey,...displayFields].filter(Boolean);
-        return fields.some(f=>String(row[f]||"").toLowerCase().includes(q));
-      })
-    : accessFiltered;
-
-  const nonZeroFiltered=showNonZeroOnly
-    ? searchFiltered.filter((row,ri)=>{
-        const rk=rowKey?String(row[rowKey]||""):String(ri);
-        return columns.some(col=>{
-          const v=values[rk+"__"+col.id];
-          return v&&v.value!==null&&v.value!==undefined&&Number(v.value)!==0;
-        });
-      })
-    : searchFiltered;
-
-  const sorted=sortCol
-    ? [...nonZeroFiltered].sort((a,b)=>{
-        const av=a[sortCol.field],bv=b[sortCol.field];
-        const an=Number(av),bn=Number(bv);
-        const cmp=!isNaN(an)&&!isNaN(bn)?an-bn:String(av||"").localeCompare(String(bv||""));
-        return sortCol.dir==="asc"?cmp:-cmp;
-      })
-    : nonZeroFiltered;
-
-  const totalPages=Math.ceil(sorted.length/PAGE_SIZE);
-  const visibleRows=sorted.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
-
+  // Sort toggle — uses ref to avoid stale closure on rapid clicks
   const toggleSort=(field)=>{
+    const cur=sortColRef.current;
+    const next=cur&&cur.field===field
+      ?{field,dir:cur.dir==="asc"?"desc":"asc"}
+      :{field,dir:"asc"};
+    sortColRef.current=next;
+    setSortCol(next);
     setPage(0);
-    setSortCol(s=>s&&s.field===field?{field,dir:s.dir==="asc"?"desc":"asc"}:{field,dir:"asc"});
   };
+
+  // Unique values for a field (for column filter dropdowns)
+  const colUniqueVals=useCallback((field)=>{
+    const s=new Set();
+    dataRows.forEach(r=>s.add(String(r[field]??"")));
+    return [...s].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  },[dataRows]);
+
+  // Toggle a value in a column filter
+  const toggleColFilter=(field,val)=>{
+    setColFilters(prev=>{
+      const cur=prev[field]?new Set(prev[field]):new Set(colUniqueVals(field));
+      if(cur.has(val)) cur.delete(val); else cur.add(val);
+      // If all selected = same as no filter
+      const all=colUniqueVals(field);
+      if(cur.size===all.length) { const n={...prev}; delete n[field]; return n; }
+      return {...prev,[field]:cur};
+    });
+    setPage(0);
+  };
+  const clearColFilter=(field)=>{setColFilters(p=>{const n={...p};delete n[field];return n;});setPage(0);};
+
+  // Filter chain: access → search → col filters → nonzero → sort → paginate
+  const afterSearch=useMemo(()=>{
+    let rows=dataRows; // show all rows to everyone — canInput/canReview controls edit permissions
+    if(search.trim()){
+      const q=search.trim().toLowerCase();
+      const fields=[rowKey,...displayFields].filter(Boolean);
+      rows=rows.filter(r=>fields.some(f=>String(r[f]||"").toLowerCase().includes(q)));
+    }
+    return rows;
+  },[dataRows,search,rowKey,displayFields]);
+
+  const afterColFilter=useMemo(()=>{
+    const active=Object.entries(colFilters).filter(([,v])=>v&&v.size>0);
+    if(!active.length) return afterSearch;
+    return afterSearch.filter(row=>active.every(([f,vals])=>vals.has(String(row[f]??""))));
+  },[afterSearch,colFilters]);
+
+  const afterNonZero=useMemo(()=>{
+    if(!showNonZeroOnly) return afterColFilter;
+    return afterColFilter.filter((row,ri)=>{
+      const rk=rowKey?String(row[rowKey]||""):String(ri);
+      return columns.some(col=>{
+        const v=values[rk+"__"+col.id];
+        return v&&Number(v.value)!==0;
+      });
+    });
+  },[afterColFilter,showNonZeroOnly,rowKey,columns,values]);
+
+  const sorted=useMemo(()=>{
+    if(!sortCol) return afterNonZero;
+    return [...afterNonZero].sort((a,b)=>{
+      const av=a[sortCol.field],bv=b[sortCol.field];
+      const an=Number(av),bn=Number(bv);
+      const cmp=!isNaN(an)&&!isNaN(bn)?an-bn:String(av??"").localeCompare(String(bv??""),undefined,{numeric:true});
+      return sortCol.dir==="asc"?cmp:-cmp;
+    });
+  },[afterNonZero,sortCol]);
+
+  // Summarize: group rows by rowKey, aggregate display fields
+  const summarizedRows=useMemo(()=>{
+    if(!summarize||!rowKey) return null;
+    const groups={};
+    const order=[];
+    sorted.forEach(row=>{
+      const k=String(row[rowKey]||"");
+      if(!groups[k]){groups[k]={...row,__rows:[row],__count:1};order.push(k);}
+      else{
+        groups[k].__rows.push(row);
+        groups[k].__count++;
+        displayFields.forEach(f=>{
+          const n=Number(row[f]);
+          if(!isNaN(n)) groups[k][f]=(Number(groups[k][f])||0)+n;
+        });
+      }
+    });
+    return order.map(k=>groups[k]);
+  },[sorted,rowKey,displayFields,summarize]);
+
+  const baseRows=summarize&&summarizedRows?summarizedRows:sorted;
+  const totalPages=Math.ceil(baseRows.length/PAGE_SIZE);
+  const pagedRows=baseRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
 
   const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
   const allCycles=[...cycles];
@@ -4510,9 +4574,14 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               </button>
             ))}
           </div>
+          {/* Summarize toggle */}
+          {rowKey&&<label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
+            <input type="checkbox" checked={summarize} onChange={e=>{setSummarize(e.target.checked);setPage(0);setExpanded(new Set());}}/>
+            Summarize by {rowKey}
+          </label>}
           {/* Row count */}
           <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
-            {sorted.length.toLocaleString()} rows
+            {baseRows.length.toLocaleString()} rows
             {totalPages>1&&` · Page ${page+1}/${totalPages}`}
           </span>
           {/* Pagination */}
@@ -4548,18 +4617,50 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     ?<span style={{display:"flex",alignItems:"center",gap:4}}>{rowKey}<span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rowKey?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span></span>
                     :<span style={{color:T.textMd,fontStyle:"italic",fontWeight:400,fontSize:11}}>Row — set identifier in ⚙ Setup</span>}
                 </th>
-                {displayFields.map((rf,rfi)=>(
-                  <th key={rf} onClick={()=>toggleSort(rf)}
-                    style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
-                      borderBottom:"2px solid "+T.border,minWidth:130,cursor:"pointer",userSelect:"none",
-                      borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
+                {displayFields.map((rf,rfi)=>{
+                  const hasFilter=colFilters[rf]&&colFilters[rf].size>0;
+                  const isOpen=filterOpen===rf;
+                  const uniqueVals=isOpen?colUniqueVals(rf):[];
+                  const selectedVals=colFilters[rf]||(isOpen?new Set(uniqueVals):null);
+                  return(
+                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                    borderBottom:"2px solid "+T.border,minWidth:130,position:"relative",
+                    borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
                     <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:4}}>
-                      {rf}
-                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                      <span onClick={()=>toggleSort(rf)} style={{cursor:"pointer",userSelect:"none",display:"flex",alignItems:"center",gap:3}}>
+                        {rf}
+                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                      </span>
+                      <span onClick={e=>{e.stopPropagation();setFilterOpen(isOpen?null:rf);}}
+                        title="Filter" style={{cursor:"pointer",fontSize:11,color:hasFilter?T.accent:T.textMd,fontWeight:hasFilter?700:400,
+                          background:hasFilter?"rgba(200,146,42,0.12)":"none",borderRadius:3,padding:"0 3px",userSelect:"none"}}>▼</span>
                     </div>
                     <div style={{fontWeight:400,fontSize:10,color:T.textMd,letterSpacing:0.3}}>view only</div>
+                    {/* Filter dropdown */}
+                    {isOpen&&(
+                      <div onClick={e=>e.stopPropagation()}
+                        style={{position:"absolute",top:"100%",right:0,zIndex:50,background:T.bgCard,border:"1px solid "+T.border,
+                          borderRadius:8,boxShadow:"0 6px 20px rgba(0,0,0,0.15)",minWidth:180,maxHeight:280,overflow:"auto",padding:6}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 6px 6px",borderBottom:"1px solid "+T.border,marginBottom:4}}>
+                          <span style={{fontSize:11,fontWeight:600,color:T.text}}>Filter: {rf}</span>
+                          <button onClick={()=>{clearColFilter(rf);setFilterOpen(null);}}
+                            style={{fontSize:10,color:T.accent,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>Clear</button>
+                        </div>
+                        {uniqueVals.map(v=>{
+                          const checked=!selectedVals||selectedVals.has(v);
+                          return(
+                          <label key={v} style={{display:"flex",alignItems:"center",gap:7,padding:"4px 6px",cursor:"pointer",borderRadius:4,
+                            background:!checked?"rgba(200,146,42,0.06)":"none",fontSize:12}}>
+                            <input type="checkbox" checked={checked} onChange={()=>toggleColFilter(rf,v)} style={{cursor:"pointer"}}/>
+                            <span style={{color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:130}}>{v||"(blank)"}</span>
+                          </label>
+                          );
+                        })}
+                      </div>
+                    )}
                   </th>
-                ))}
+                  );
+                })}
                 {displayFields.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
                 {columns.map(col=>(
                   <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:160}}>
@@ -4573,14 +4674,27 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               </tr>
             </thead>
             <tbody>
-              {visibleRows.map((row,ri)=>{
+              {pagedRows.map((row,ri)=>{
                 const rowBg=ri%2===0?T.bgCard:T.bgAlt;
-                const rk=rowKey?String(row[rowKey]||""):String(ri);
+                const rk=rowKey?String(row[rowKey]||""):String(page*PAGE_SIZE+ri);
+                const isGroupRow=summarize&&row.__rows;
+                const isExpanded=expanded.has(rk);
                 return(
-                  <tr key={rk} style={{background:rowBg,borderBottom:"1px solid "+T.border}}>
+                  <React.Fragment key={rk}>
+                  <tr style={{background:rowBg,borderBottom:"1px solid "+T.border}}>
                     <td style={{padding:"8px 14px",fontWeight:600,color:T.text,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
-                        title={rowKey?String(row[rowKey]||""):String(ri+1)}>
-                      {rowKey?row[rowKey]:ri+1}
+                        title={rowKey?String(row[rowKey]||""):String(page*PAGE_SIZE+ri+1)}>
+                      {isGroupRow?(
+                        <span style={{display:"flex",alignItems:"center",gap:6}}>
+                          <button onClick={()=>setExpanded(e=>{const s=new Set(e);s.has(rk)?s.delete(rk):s.add(rk);return s;})}
+                            style={{background:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
+                              fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.textMd}}>
+                            {isExpanded?"−":"+"}
+                          </button>
+                          <span>{row[rowKey]||rk}</span>
+                          <span style={{fontSize:10,color:T.textMd,fontWeight:400}}>({row.__count})</span>
+                        </span>
+                      ):(rowKey?row[rowKey]:page*PAGE_SIZE+ri+1)}
                     </td>
                     {displayFields.map((rf,rfi)=>(
                       <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
@@ -4649,9 +4763,31 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </button>
                     </td>
                   </tr>
+                  {/* Drill-down sub-rows for summarized groups */}
+                  {isGroupRow&&isExpanded&&row.__rows.map((subRow,si)=>(
+                    <tr key={rk+"_sub_"+si} style={{background:"rgba(200,146,42,0.05)",borderBottom:"1px solid "+T.border}}>
+                      <td style={{padding:"6px 14px 6px 36px",color:T.textMd,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {displayFields[0]?String(subRow[displayFields[0]]||"—"):String(si+1)}
+                      </td>
+                      {displayFields.map((rf,rfi)=>(
+                        <td key={rf} style={{padding:"6px 14px",textAlign:"right",color:T.textMd,fontSize:12,
+                          borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
+                          {fmtNum(subRow[rf])}
+                        </td>
+                      ))}
+                      {displayFields.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
+                      {columns.map(col=>(
+                        <td key={col.id} style={{padding:"6px 14px",fontSize:11,color:T.textMd,fontStyle:"italic"}}>
+                          ↑ grouped
+                        </td>
+                      ))}
+                      <td/>
+                    </tr>
+                  ))}
+                  </React.Fragment>
                 );
               })}
-              {visibleRows.length===0&&(
+              {pagedRows.length===0&&(
                 <tr><td colSpan={columns.length+displayFields.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
               )}
             </tbody>
