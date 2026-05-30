@@ -4448,21 +4448,21 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
       {/* Main table */}
       {!loading&&(activeCycle||cycles.length>0)&&columns.length>0&&(
         <div style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
-          {!rowKey&&isBuilder&&<div style={{background:"#FFF3CD",color:"#856404",padding:"8px 16px",fontSize:12}}>
-            ⚠ No Row Key set. Go to <strong>🤝 Workflow tab → ⚙ Setup Columns & Cycle</strong> and select a Row Identifier field (e.g. Vendor Name).
-          </div>}
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
                 <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180}}>
-                  {rowKey||"Row"}
+                  {rowKey||<span style={{color:T.textMd,fontStyle:"italic",fontWeight:400,fontSize:11}}>Row — set identifier in ⚙ Setup</span>}
                 </th>
-                {displayFields.map(rf=>(
-                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:130,background:T.bgStat}}>
+                {displayFields.map((rf,rfi)=>(
+                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                    borderBottom:"2px solid "+T.border,minWidth:130,
+                    borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
                     <div>{rf}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>view only</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd,letterSpacing:0.3}}>view only</div>
                   </th>
                 ))}
+                {displayFields.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
                 {columns.map(col=>(
                   <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:160}}>
                     <div>{col.label}</div>
@@ -4476,20 +4476,25 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
             </thead>
             <tbody>
               {visibleRows.map((row,ri)=>{
+                const rowBg=ri%2===0?T.bgCard:T.bgAlt;
                 const rk=rowKey?String(row[rowKey]||""):String(ri);
                 return(
-                  <tr key={rk} style={{background:ri%2===0?T.bgCard:T.bgAlt,borderBottom:"1px solid "+T.border}}>
+                  <tr key={rk} style={{background:rowBg,borderBottom:"1px solid "+T.border}}>
                     <td style={{padding:"8px 14px",fontWeight:600,color:T.text,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
                         title={rowKey?String(row[rowKey]||""):String(ri+1)}>
                       {rowKey?row[rowKey]:ri+1}
                     </td>
-                    {displayFields.map(rf=>(
-                      <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,background:T.bgStat,whiteSpace:"nowrap"}}>
+                    {displayFields.map((rf,rfi)=>(
+                      <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
+                        background:rowBg,whiteSpace:"nowrap",
+                        borderLeft:rfi===0?"2px solid "+T.borderDk:"none",
+                        opacity:0.85}}>
                         {row[rf]!==null&&row[rf]!==undefined
                           ?(isNaN(Number(row[rf]))?row[rf]:Number(row[rf]).toLocaleString('en-IN',{maximumFractionDigits:2}))
                           :"—"}
                       </td>
                     ))}
+                    {displayFields.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
                     {columns.map(col=>{
                       const dk=draftKey(rk,col.id);
                       const existing=values[dk];
