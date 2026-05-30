@@ -10,6 +10,7 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getReportAccess, setReportAccess,
          getPublishedReports, getPublishedReportData,
          getRefreshSchedule, setRefreshSchedule,
+         getReportFields,
          toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
          getCollabCycles, openCollabCycle, closeCollabCycle,
          getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
@@ -3928,15 +3929,17 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [openingCycle,setOpeningCycle]=useState(false);
   const [rowKeyField,setRowKeyField]=useState(report?.config?.collab_row_key||"");
   const [savingRowKey,setSavingRowKey]=useState(false);
+  const [displayFields,setDisplayFields]=useState(report?.config?.collab_display_fields||[]);
+  const [savingDisplay,setSavingDisplay]=useState(false);
   const [dataFields,setDataFields]=useState([]);
 
-  // ColForm state
-  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[],ref_column:""};
+  // ColForm state — no ref_column (display fields handle context columns)
+  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[]};
   const [colForm,setColForm]=useState(blankForm);
 
   useEffect(()=>{
     (async()=>{
-      // Load collab data + users (critical — show errors if these fail)
+      // Load collab metadata + users
       try{
         const [cols,cycs,users]=await Promise.all([
           getCollabColumns(report.id),
@@ -3946,29 +3949,11 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
         setColumns(cols);setCycles(cycs);setAllUsers(users);
       }catch(e){setMsg("Load error: "+e.message);}
 
-      // Load field names for row-key dropdown — try report data first, fall back to config
+      // Load field names via lightweight endpoint
       try{
-        const rd=await getReportData(report.id);
-        if(rd.fields&&rd.fields.length>0){
-          setDataFields(rd.fields);
-        } else if(rd.rows&&rd.rows.length>0){
-          setDataFields(Object.keys(rd.rows[0]));
-        } else {
-          throw new Error("no fields in data");
-        }
-      }catch(e){
-        // Fallback: extract field names directly from the report config
-        const cfg=report?.config||{};
-        const fields=new Set();
-        const extractFrom=(c)=>{
-          ['rows','columns','values','filters'].forEach(key=>{
-            (c[key]||[]).forEach(f=>{if(f&&f.field)fields.add(f.field);});
-          });
-        };
-        if(cfg.tabs&&cfg.tabs.length>0){cfg.tabs.forEach(t=>extractFrom(t.config||{}));}
-        extractFrom(cfg); // also check top-level (single-tab reports)
-        if(fields.size>0)setDataFields([...fields]);
-      }
+        const fields=await getReportFields(report.id);
+        if(Array.isArray(fields)&&fields.length>0) setDataFields(fields);
+      }catch(e){/* silently ignore — user can still proceed */}
 
       setLoading(false);
     })();
@@ -3977,11 +3962,21 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const saveRowKey=async()=>{
     setSavingRowKey(true);
     try{
-      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null};
+      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null,collab_display_fields:displayFields};
       await updateReportConfig(report.id,newCfg,report.name);
       setMsg("✓ Row key saved");setTimeout(()=>setMsg(""),2000);
     }catch(e){setMsg("Error: "+e.message);}
     setSavingRowKey(false);
+  };
+
+  const saveDisplayFields=async()=>{
+    setSavingDisplay(true);
+    try{
+      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null,collab_display_fields:displayFields};
+      await updateReportConfig(report.id,newCfg,report.name);
+      setMsg("✓ Display columns saved");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSavingDisplay(false);
   };
 
   const openCycle=async()=>{
@@ -4010,7 +4005,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
     if(!colForm.label.trim())return setMsg("Column label required");
     setSaving(true);
     try{
-      const payload={...colForm,col_order:columns.length};
+      const payload={...colForm,ref_column:null,col_order:columns.length};
       let saved;
       if(editingCol&&editingCol.id){
         saved=await updateCollabColumn(report.id,editingCol.id,payload);
@@ -4039,11 +4034,10 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
       label:col.label,col_type:col.col_type,
       inputter_ids:Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]'),
       reviewer_ids:Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]'),
-      ref_column:col.ref_column||""
     });
   };
 
-  // dataFields is loaded from actual report rows in useEffect above
+  // dataFields loaded via getReportFields in useEffect above
   const statusColor={open:"#2D6A4F",closed:"#A32D2D"};
 
   return(
@@ -4062,23 +4056,53 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
           {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",border:"1px solid #A5D6A7",borderRadius:7,padding:"8px 14px",fontSize:13,marginBottom:16}}>{msg}</div>}
           {loading&&<div style={{color:T.textMd,padding:20}}>Loading…</div>}
 
-          {/* ── Row Key ── */}
+          {/* ── Row Key + Display Fields ── */}
           {!loading&&(
-            <div style={{marginBottom:20,background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
-              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:8}}>Row Identifier (Row Key)</div>
-              <div style={{fontSize:12,color:T.textMd,marginBottom:10}}>Select the column that uniquely identifies each row (e.g. Vendor Code, Account ID). This is used to link input values to specific rows.</div>
-              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                <select value={rowKeyField} onChange={e=>setRowKeyField(e.target.value)}
-                  style={{flex:1,minWidth:140,padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13}}>
-                  <option value="">— Select a field —</option>
-                  {(report?.config?.tabs?.[0]?.fields||[]).map(f=><option key={f} value={f}>{f}</option>)}
-                </select>
-                <button onClick={saveRowKey} disabled={savingRowKey}
-                  style={{padding:"7px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:savingRowKey?"wait":"pointer",fontSize:12,fontWeight:700,opacity:savingRowKey?0.6:1}}>
-                  {savingRowKey?"Saving…":"Save Row Key"}
-                </button>
+            <div style={{marginBottom:20,background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:16}}>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:4}}>Workflow Columns Setup</div>
+              <div style={{fontSize:12,color:T.textMd,marginBottom:14,lineHeight:1.5}}>
+                Choose which data columns appear in the Workflow View. The <strong>Row Identifier</strong> uniquely identifies each row. <strong>Display columns</strong> appear as view-only reference columns.
               </div>
-              {rowKeyField&&<div style={{marginTop:6,fontSize:12,color:T.success}}>✓ Current row key: <strong>{rowKeyField}</strong></div>}
+
+              {/* Row Identifier */}
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Row Identifier *</label>
+                <div style={{fontSize:11,color:T.textMd,marginBottom:4}}>The column that uniquely identifies each row (e.g. Vendor Name, Vendor Code)</div>
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <select value={rowKeyField} onChange={e=>setRowKeyField(e.target.value)}
+                    style={{flex:1,minWidth:140,padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13}}>
+                    <option value="">— Select a field —</option>
+                    {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
+                {rowKeyField&&<div style={{marginTop:4,fontSize:12,color:T.success}}>✓ Set to: <strong>{rowKeyField}</strong></div>}
+              </div>
+
+              {/* Display Columns */}
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Display Columns (view-only context shown in Workflow View)</label>
+                <div style={{fontSize:11,color:T.textMd,marginBottom:6}}>Select any additional columns from the report data to show alongside input columns (e.g. Net Due, Bill Value)</div>
+                {dataFields.length===0&&<div style={{fontSize:12,color:T.warning}}>⚠ No fields loaded — save the report with data first</div>}
+                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
+                  {dataFields.filter(f=>f!==rowKeyField).map(f=>{
+                    const sel=displayFields.includes(f);
+                    return(
+                      <button key={f} onClick={()=>setDisplayFields(d=>sel?d.filter(x=>x!==f):[...d,f])}
+                        style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:sel?700:400,
+                          background:sel?T.accent:"none",color:sel?T.textLt:T.text,
+                          border:"1px solid "+(sel?T.accent:T.border)}}>
+                        {f}
+                      </button>
+                    );
+                  })}
+                </div>
+                {displayFields.length>0&&<div style={{marginTop:6,fontSize:12,color:T.success}}>✓ Showing: <strong>{displayFields.join(", ")}</strong></div>}
+              </div>
+
+              <button onClick={saveDisplayFields} disabled={savingDisplay||savingRowKey}
+                style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700,opacity:(savingDisplay||savingRowKey)?0.6:1}}>
+                {savingDisplay?"Saving…":"Save Settings"}
+              </button>
             </div>
           )}
 
@@ -4110,14 +4134,6 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                         <option value="workflow">Workflow (submit → approve/reject/hold)</option>
                       </select>
                     </div>
-                  </div>
-                  <div style={{marginBottom:12}}>
-                    <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Reference Column (optional — shown alongside for context)</label>
-                    <select value={colForm.ref_column} onChange={e=>setColForm(f=>({...f,ref_column:e.target.value}))}
-                      style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,marginTop:4}}>
-                      <option value="">— None —</option>
-                      {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
-                    </select>
                   </div>
                   <UserMultiSelect label="Inputters (who can enter values)" value={colForm.inputter_ids}
                     allUsers={allUsers} onChange={v=>setColForm(f=>({...f,inputter_ids:v}))}/>
@@ -4260,7 +4276,8 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const myId=currentUser?.id;
   const isBuilder=['admin','subadmin','subadmin_user'].includes(currentRole);
 
-  const rowKey=report?.config?.collab_row_key; // field name that uniquely identifies a row
+  const rowKey=report?.config?.collab_row_key; // field name that uniquely identifies each row
+  const displayFields=Array.isArray(report?.config?.collab_display_fields)?report.config.collab_display_fields:[];
 
   useEffect(()=>{loadAll();},[report.id]);
 
@@ -4415,17 +4432,17 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           {!rowKey&&isBuilder&&<div style={{background:"#FFF3CD",color:"#856404",padding:"8px 16px",fontSize:12}}>
             ⚠ No Row Key set. Go to <strong>🤝 Workflow tab → ⚙ Setup Columns & Cycle</strong> and select a Row Identifier field (e.g. Vendor Name).
           </div>}
-          {(()=>{const refCols=[...new Set(columns.map(c=>c.ref_column).filter(Boolean))];return(
+          {(()=>{return(
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
                 <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180}}>
                   {rowKey||"Row"}
                 </th>
-                {refCols.map(rf=>(
+                {displayFields.map(rf=>(
                   <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:130,background:T.bgStat}}>
                     <div>{rf}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>reference</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>view only</div>
                   </th>
                 ))}
                 {columns.map(col=>(
@@ -4448,9 +4465,11 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                         title={rowKey?String(row[rowKey]||""):String(ri+1)}>
                       {rowKey?row[rowKey]:ri+1}
                     </td>
-                    {refCols.map(rf=>(
+                    {displayFields.map(rf=>(
                       <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,background:T.bgStat,whiteSpace:"nowrap"}}>
-                        {row[rf]!==null&&row[rf]!==undefined?Number(row[rf]).toLocaleString('en-IN',{maximumFractionDigits:2}):"—"}
+                        {row[rf]!==null&&row[rf]!==undefined
+                          ?(isNaN(Number(row[rf]))?row[rf]:Number(row[rf]).toLocaleString('en-IN',{maximumFractionDigits:2}))
+                          :"—"}
                       </td>
                     ))}
                     {columns.map(col=>{
@@ -4462,7 +4481,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       const cycleClosed=activeCycle?.status==="closed";
                       const canI=!cycleClosed&&canInput(col);
                       const canR=!cycleClosed&&col.col_type==="workflow"&&canReview(col);
-                      const refVal=null; // now shown as dedicated column above
+                      const refVal=null; // display fields are shown as dedicated columns, not inline
                       return(
                         <td key={col.id} style={{padding:"6px 14px",verticalAlign:"top"}}>
                           {refVal!==null&&refVal!==undefined&&<div style={{fontSize:10,color:T.textMd,marginBottom:2}}>Ref: {refVal}</div>}
@@ -4514,7 +4533,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 );
               })}
               {visibleRows.length===0&&(
-                <tr><td colSpan={columns.length+refCols.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+                <tr><td colSpan={columns.length+displayFields.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
               )}
             </tbody>
           </table>

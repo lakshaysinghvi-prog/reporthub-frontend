@@ -160,6 +160,9 @@ export const deleteCustomCredentials = (provider) =>
 
 // ── Phase 3: Collaborative Workflow ───────────────────────────────────────────
 
+// Lightweight field-name list for collab setup dropdowns (no rows loaded)
+export const getReportFields = (id) => api(`/api/reports/${id}/fields`);
+
 export const toggleCollab = (id, enabled) =>
   api(`/api/reports/${id}/collab-toggle`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
 
