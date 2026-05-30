@@ -3936,21 +3936,40 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
 
   useEffect(()=>{
     (async()=>{
+      // Load collab data + users (critical — show errors if these fail)
       try{
-        const [cols,cycs,users,rd]=await Promise.all([
+        const [cols,cycs,users]=await Promise.all([
           getCollabColumns(report.id),
           getCollabCycles(report.id),
-          getUsers(),
-          getReportData(report.id)
+          getUsers()
         ]);
         setColumns(cols);setCycles(cycs);setAllUsers(users);
-        // Extract real field names from actual data rows
+      }catch(e){setMsg("Load error: "+e.message);}
+
+      // Load field names for row-key dropdown — try report data first, fall back to config
+      try{
+        const rd=await getReportData(report.id);
         if(rd.fields&&rd.fields.length>0){
           setDataFields(rd.fields);
         } else if(rd.rows&&rd.rows.length>0){
           setDataFields(Object.keys(rd.rows[0]));
+        } else {
+          throw new Error("no fields in data");
         }
-      }catch(e){setMsg("Load error: "+e.message);}
+      }catch(e){
+        // Fallback: extract field names directly from the report config
+        const cfg=report?.config||{};
+        const fields=new Set();
+        const extractFrom=(c)=>{
+          ['rows','columns','values','filters'].forEach(key=>{
+            (c[key]||[]).forEach(f=>{if(f&&f.field)fields.add(f.field);});
+          });
+        };
+        if(cfg.tabs&&cfg.tabs.length>0){cfg.tabs.forEach(t=>extractFrom(t.config||{}));}
+        extractFrom(cfg); // also check top-level (single-tab reports)
+        if(fields.size>0)setDataFields([...fields]);
+      }
+
       setLoading(false);
     })();
   },[report.id]);
@@ -4394,20 +4413,26 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
       {!loading&&(activeCycle||cycles.length>0)&&columns.length>0&&(
         <div style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
           {!rowKey&&isBuilder&&<div style={{background:"#FFF3CD",color:"#856404",padding:"8px 16px",fontSize:12}}>
-            ⚠ No Row Key set. Go to Report Builder → config to set <code>collab_row_key</code> in the report's collab settings.
+            ⚠ No Row Key set. Go to <strong>🤝 Workflow tab → ⚙ Setup Columns & Cycle</strong> and select a Row Identifier field (e.g. Vendor Name).
           </div>}
+          {(()=>{const refCols=[...new Set(columns.map(c=>c.ref_column).filter(Boolean))];return(
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
-                <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:120}}>
+                <th style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180}}>
                   {rowKey||"Row"}
                 </th>
+                {refCols.map(rf=>(
+                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:130,background:T.bgStat}}>
+                    <div>{rf}</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>reference</div>
+                  </th>
+                ))}
                 {columns.map(col=>(
                   <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:160}}>
                     <div>{col.label}</div>
                     <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>
                       {col.col_type==="workflow"?"Workflow":"Input Only"}
-                      {col.ref_column&&<span> · ref: {col.ref_column}</span>}
                     </div>
                   </th>
                 ))}
@@ -4419,7 +4444,15 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 const rk=rowKey?String(row[rowKey]||""):String(ri);
                 return(
                   <tr key={rk} style={{background:ri%2===0?T.bgCard:T.bgAlt,borderBottom:"1px solid "+T.border}}>
-                    <td style={{padding:"8px 14px",fontWeight:500,color:T.text}}>{rowKey?row[rowKey]:ri+1}</td>
+                    <td style={{padding:"8px 14px",fontWeight:600,color:T.text,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                        title={rowKey?String(row[rowKey]||""):String(ri+1)}>
+                      {rowKey?row[rowKey]:ri+1}
+                    </td>
+                    {refCols.map(rf=>(
+                      <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,background:T.bgStat,whiteSpace:"nowrap"}}>
+                        {row[rf]!==null&&row[rf]!==undefined?Number(row[rf]).toLocaleString('en-IN',{maximumFractionDigits:2}):"—"}
+                      </td>
+                    ))}
                     {columns.map(col=>{
                       const dk=draftKey(rk,col.id);
                       const existing=values[dk];
@@ -4429,7 +4462,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       const cycleClosed=activeCycle?.status==="closed";
                       const canI=!cycleClosed&&canInput(col);
                       const canR=!cycleClosed&&col.col_type==="workflow"&&canReview(col);
-                      const refVal=col.ref_column?row[col.ref_column]:null;
+                      const refVal=null; // now shown as dedicated column above
                       return(
                         <td key={col.id} style={{padding:"6px 14px",verticalAlign:"top"}}>
                           {refVal!==null&&refVal!==undefined&&<div style={{fontSize:10,color:T.textMd,marginBottom:2}}>Ref: {refVal}</div>}
@@ -4481,10 +4514,11 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 );
               })}
               {visibleRows.length===0&&(
-                <tr><td colSpan={columns.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+                <tr><td colSpan={columns.length+refCols.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
               )}
             </tbody>
           </table>
+          );})()}
         </div>
       )}
 
