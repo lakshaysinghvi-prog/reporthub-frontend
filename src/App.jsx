@@ -3945,7 +3945,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
       try{
         const cols=await getCollabColumns(report.id);
         setColumns(cols);
-      }catch(e){setMsg("Could not load collab columns: "+e.message);}
+      }catch(e){console.warn("collab columns load error:",e.message);}
 
       // 2. Cycles
       try{
@@ -4451,7 +4451,6 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           {!rowKey&&isBuilder&&<div style={{background:"#FFF3CD",color:"#856404",padding:"8px 16px",fontSize:12}}>
             ⚠ No Row Key set. Go to <strong>🤝 Workflow tab → ⚙ Setup Columns & Cycle</strong> and select a Row Identifier field (e.g. Vendor Name).
           </div>}
-          {(()=>{return(
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
@@ -4556,7 +4555,6 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               )}
             </tbody>
           </table>
-          );})()}
         </div>
       )}
 
