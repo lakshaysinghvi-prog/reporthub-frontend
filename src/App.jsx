@@ -4415,7 +4415,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [page,setPage]=useState(0);
   const PAGE_SIZE=100;
   const [colFilters,setColFilters]=useState({}); // {field: string[]|undefined}
-  const [expanded,setExpanded]=useState(new Set());
+  const [drillDown,setDrillDown]=useState(null); // {rk, rows, label} — drill-down modal
   // Fresh config from API (overrides stale prop after Save View Config)
   const [freshConfig,setFreshConfig]=useState(null);
 
@@ -4777,8 +4777,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               {pagedRows.map((row,ri)=>{
                 const rowBg=ri%2===0?T.bgCard:T.bgAlt;
                 const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
-                const isGroupRow=row.__rows&&row.__rows.length>0;
-                const isExpanded=expanded.has(rk);
+                const isGroupRow=row.__rows&&row.__rows.length>1;
                 const wfCols=columns.filter(c=>c.col_type==="workflow");
                 return(
                   <React.Fragment key={rk}>
@@ -4791,10 +4790,12 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                         title={String(row[rf]||"")}>
                         {i===0&&isGroupRow?(
                           <span style={{display:"flex",alignItems:"center",gap:6}}>
-                            <button onClick={()=>setExpanded(e=>{const s=new Set(e);s.has(rk)?s.delete(rk):s.add(rk);return s;})}
+                            <button
+                              onClick={()=>setDrillDown({rk,rows:row.__rows,label:String(row[rf]||rk)})}
+                              title="Drill down — view raw rows"
                               style={{background:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
-                                fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.textMd}}>
-                              {isExpanded?"−":"+"}
+                                fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.primary,fontWeight:700}}>
+                              +
                             </button>
                             <span>{row[rf]||rk}</span>
                             <span style={{fontSize:10,color:T.textMd,fontWeight:400}}>({row.__count})</span>
@@ -4890,32 +4891,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </button>
                     </td>
                   </tr>
-                  {/* Drill-down sub-rows */}
-                  {isGroupRow&&isExpanded&&row.__rows.map((subRow,si)=>(
-                    <tr key={rk+"_sub_"+si} style={{background:"rgba(200,146,42,0.05)",borderBottom:"1px solid "+T.border}}>
-                      {viewRows.map((rf,i)=>(
-                        <td key={rf} style={{padding:"6px 14px 6px "+(i===0?36:14)+"px",color:T.textMd,fontSize:12,
-                          overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
-                          borderLeft:i>0?"1px solid "+T.border:"none"}}>
-                          {String(subRow[rf]||"")}
-                        </td>
-                      ))}
-                      {viewRows.length===0&&<td style={{paddingLeft:36,color:T.textMd,fontSize:12}}>{si+1}</td>}
-                      {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
-                      {viewValues.map(({field})=>(
-                        <td key={field} style={{padding:"6px 14px",textAlign:"right",color:T.textMd,fontSize:12}}>
-                          {fmtNum(subRow[field])}
-                        </td>
-                      ))}
-                      <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>
-                      {columns.map(col=>(
-                        <td key={col.id} style={{padding:"6px 14px",fontSize:11,color:T.textMd,fontStyle:"italic"}}>↑ grouped</td>
-                      ))}
-                      {wfCols.map(col=>(<td key={"appr_"+col.id}/>))}
-                      {columns.some(c=>c.col_type==="workflow")&&<td/>}
-                      <td/>
-                    </tr>
-                  ))}
+                  {/* No inline sub-rows — drill-down opens as a clean modal (click + button) */}
                   </React.Fragment>
                 );
               })}
@@ -4929,6 +4905,77 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
       {!loading&&columns.length===0&&(
         <div style={{padding:30,color:T.textMd,fontSize:14}}>No collab columns defined yet. Use ⚙ Setup Columns & Cycle in the Workflow tab.</div>
+      )}
+
+      {/* ── Drill-Down Modal — raw rows for the selected summary group ── */}
+      {drillDown&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:0,width:"min(900px,96vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(0,0,0,0.35)"}}>
+            {/* Header */}
+            <div style={{background:T.bgHeader,borderRadius:"12px 12px 0 0",padding:"13px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+              <div>
+                <div style={{color:T.textLt,fontWeight:700,fontSize:14}}>🔍 Drill Down — {drillDown.label}</div>
+                <div style={{color:"rgba(245,239,230,0.65)",fontSize:11,marginTop:2}}>{drillDown.rows.length} raw row{drillDown.rows.length!==1?"s":""}</div>
+              </div>
+              <button onClick={()=>setDrillDown(null)} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
+            </div>
+            {/* Table */}
+            <div style={{overflowX:"auto",overflowY:"auto",flex:1}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead>
+                  <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
+                    <th style={{padding:"8px 12px",textAlign:"left",fontWeight:600,color:T.textMd,borderBottom:"2px solid "+T.border,minWidth:36,width:36}}>#</th>
+                    {/* Show ALL fields from the raw rows */}
+                    {drillDown.rows.length>0&&Object.keys(drillDown.rows[0]).filter(k=>!k.startsWith("__")).map(f=>{
+                      const isVal=viewValues.some(v=>v.field===f);
+                      const isRow=viewRows.includes(f);
+                      return(
+                        <th key={f} style={{padding:"8px 12px",textAlign:isVal?"right":"left",fontWeight:600,
+                          color:isVal?T.tagV:isRow?T.tagR:T.textMd,
+                          borderBottom:"2px solid "+T.border,whiteSpace:"nowrap",minWidth:100}}>
+                          {f}
+                          {isVal&&<div style={{fontWeight:400,fontSize:10,color:T.textMd}}>
+                            {viewValues.find(v=>v.field===f)?.agg||""}
+                          </div>}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {drillDown.rows.map((r,i)=>(
+                    <tr key={i} style={{background:i%2===0?T.bgCard:T.bgAlt,borderBottom:"1px solid "+T.border}}>
+                      <td style={{padding:"7px 12px",color:T.textMd,fontSize:11}}>{i+1}</td>
+                      {Object.keys(drillDown.rows[0]).filter(k=>!k.startsWith("__")).map(f=>{
+                        const isVal=viewValues.some(v=>v.field===f);
+                        const val=r[f];
+                        return(
+                          <td key={f} style={{padding:"7px 12px",textAlign:isVal?"right":"left",
+                            color:isVal?T.numColor:T.text,fontWeight:isVal?500:400,
+                            whiteSpace:"nowrap",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis"}}
+                            title={String(val??"")}>
+                            {isVal?fmtNum(val):(val===null||val===undefined||val===""?"—":String(val))}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {/* Footer */}
+            <div style={{padding:"10px 18px",borderTop:"1px solid "+T.border,display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+              <span style={{fontSize:12,color:T.textMd}}>
+                <span style={{color:T.tagR,fontWeight:600}}>■</span> Row fields &nbsp;
+                <span style={{color:T.tagV,fontWeight:600}}>■</span> Value fields
+              </span>
+              <button onClick={()=>setDrillDown(null)}
+                style={{padding:"6px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Review Modal */}
