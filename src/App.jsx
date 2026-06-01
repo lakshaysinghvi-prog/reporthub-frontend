@@ -3556,11 +3556,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               </div>
 
               <div style={{borderTop:"0.5px solid "+T.border,paddingTop:10,display:"flex",flexDirection:"column",maxHeight:520,overflowY:"auto"}}>
-                {dataset.fields.map(f=>(
-                  <FieldRow key={f} field={f} isNum={effectiveNumFields.has(f)}
-                    status={fieldStatus[f]||{}} onToggle={toggleField}
-                    onToggleType={()=>toggleFieldType(f)} onToggleCard={()=>toggleCard(f)}/>
-                ))}
+                <FieldSearch fields={dataset.fields} numFields={effectiveNumFields}
+                  fieldStatus={fieldStatus} onToggle={toggleField}
+                  onToggleType={f=>toggleFieldType(f)} onToggleCard={f=>toggleCard(f)}/>
               </div>
             </div>
 
@@ -3923,15 +3921,39 @@ function WorkflowListTab({savedReports,currentUser,currentRole,onSetup,onOpenVie
   );
 }
 
+// ── Field search wrapper for the Report Builder left-panel field list ─────────
+function FieldSearch({fields,numFields,fieldStatus,onToggle,onToggleType,onToggleCard}){
+  const [q,setQ]=useState("");
+  const vis=q.trim()?fields.filter(f=>f.toLowerCase().includes(q.toLowerCase())):fields;
+  return(
+    <>
+      {fields.length>8&&(
+        <input value={q} onChange={e=>setQ(e.target.value)}
+          placeholder={`Search ${fields.length} fields…`}
+          style={{padding:"5px 9px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:12,
+            background:T.bgStat,color:T.text,outline:"none",marginBottom:6,width:"100%",boxSizing:"border-box"}}/>
+      )}
+      {vis.map(f=>(
+        <FieldRow key={f} field={f} isNum={numFields.has(f)}
+          status={fieldStatus[f]||{}} onToggle={onToggle}
+          onToggleType={()=>onToggleType(f)} onToggleCard={()=>onToggleCard(f)}/>
+      ))}
+      {vis.length===0&&q&&<div style={{padding:"8px 4px",fontSize:11,color:T.textMd}}>No fields match "{q}"</div>}
+    </>
+  );
+}
+
 // ── Mini builder zone helpers (used by CollabSetupPanel) ─────────────────────
 function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
   const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
   const available=allFields.filter(f=>!fields.includes(f));
+  const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
   return(
     <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
       <div style={{fontSize:11,fontWeight:700,color,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <span>{label}</span>
-        <button onClick={()=>setOpen(o=>!o)}
+        <button onClick={()=>{setOpen(o=>!o);setQ("");}}
           style={{fontSize:10,background:color,color:"#fff",border:"none",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>+ Add</button>
       </div>
       <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
@@ -3945,17 +3967,22 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
         {fields.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
       </div>
       {open&&(
-        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6,maxHeight:140,overflowY:"auto"}}>
-          {available.map(f=>(
-            <div key={f} onClick={()=>{onAdd(f);setOpen(false);}}
-              style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
-              onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
-              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-              {f}
-            </div>
-          ))}
-          {available.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>All fields assigned</div>}
-          <button onClick={()=>setOpen(false)}
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6}}>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={`Search ${available.length} fields…`}
+            style={{width:"100%",padding:"4px 8px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:11,
+              background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none",marginBottom:4}}/>
+          <div style={{maxHeight:130,overflowY:"auto"}}>
+            {visAvail.map(f=>(
+              <div key={f} onClick={()=>{onAdd(f);setOpen(false);setQ("");}}
+                style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+                onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                {f}
+              </div>
+            ))}
+            {visAvail.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>{q?"No matches":"All fields assigned"}</div>}
+          </div>
+          <button onClick={()=>{setOpen(false);setQ("");}}
             style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
             Close ✕
           </button>
@@ -3967,8 +3994,10 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
 
 function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAggChange}){
   const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
   const assigned=values.map(v=>v.field);
   const available=allFields.filter(f=>!assigned.includes(f));
+  const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
   const AGGS=["sum","count","avg","min","max"];
   return(
     <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
@@ -3993,17 +4022,22 @@ function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAg
         {values.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
       </div>
       {open&&(
-        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6,maxHeight:140,overflowY:"auto"}}>
-          {available.map(f=>(
-            <div key={f} onClick={()=>{onAdd(f);setOpen(false);}}
-              style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
-              onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
-              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-              {f}
-            </div>
-          ))}
-          {available.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>All fields assigned</div>}
-          <button onClick={()=>setOpen(false)}
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6}}>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={`Search ${available.length} fields…`}
+            style={{width:"100%",padding:"4px 8px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:11,
+              background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none",marginBottom:4}}/>
+          <div style={{maxHeight:130,overflowY:"auto"}}>
+            {visAvail.map(f=>(
+              <div key={f} onClick={()=>{onAdd(f);setOpen(false);setQ("");}}
+                style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+                onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                {f}
+              </div>
+            ))}
+            {visAvail.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>{q?"No matches":"All fields assigned"}</div>}
+          </div>
+          <button onClick={()=>{setOpen(false);setQ("");}}
             style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
             Close ✕
           </button>
@@ -4414,8 +4448,9 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [numFmt,setNumFmt]=useState("units");
   const [page,setPage]=useState(0);
   const PAGE_SIZE=100;
-  const [colFilters,setColFilters]=useState({}); // {field: string[]|undefined}
-  const [colSorts,setColSorts]=useState({});     // {field: 'az'|'za'|'09'|'90'}
+  const [colFilters,setColFilters]=useState({});      // {field: string[]|undefined} — pre-grouping
+  const [collabFilters,setCollabFilters]=useState({}); // {colId: string[]|undefined} — post-grouping on collab values
+  const [colSorts,setColSorts]=useState({});           // {field: 'az'|'za'|'09'|'90'}
   const [drillDown,setDrillDown]=useState(null); // {rk, rows, label} — drill-down modal
   // Fresh config from API (overrides stale prop after Save View Config)
   const [freshConfig,setFreshConfig]=useState(null);
@@ -4428,6 +4463,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const _ac=freshConfig||(typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{}));
   const viewRows=_ac.collab_rows||((_ac.collab_row_key)?[_ac.collab_row_key]:[]);
   const viewValues=_ac.collab_values||(Array.isArray(_ac.collab_display_fields)?_ac.collab_display_fields:[]).map(f=>({field:f,agg:"sum"}));
+  const viewCols=_ac.collab_cols||[]; // C zone — text reference columns
   const viewFilters=_ac.collab_filters||[];
   const rowKey=viewRows[0]||null; // primary display field
   const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
@@ -4623,6 +4659,18 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     });
     displayRows=order.map(k=>groups[k]);
   }
+  // Post-grouping filter: collab column value filters
+  const activeCollabFilters=Object.entries(collabFilters).filter(([,v])=>Array.isArray(v)&&v.length>0);
+  if(activeCollabFilters.length){
+    displayRows=displayRows.filter((row,ri)=>{
+      const rk=row.__rk||computeRK(row,ri);
+      return activeCollabFilters.every(([colId,vals])=>{
+        const v=values[rk+"__"+colId];
+        const cell=v?.value!==undefined&&v.value!==null?String(v.value):"";
+        return vals.includes(cell);
+      });
+    });
+  }
   const totalPages=Math.ceil(displayRows.length/PAGE_SIZE);
   const pagedRows=displayRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
 
@@ -4745,6 +4793,24 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     Row — set Rows (R) in ⚙ Setup
                   </th>
                 )}
+                {/* C zone — text reference columns */}
+                {viewCols.map((cf,i)=>(
+                  <th key={cf}
+                    style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.tagC,
+                      borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",
+                      borderLeft:"1px solid "+T.border}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{flex:1}}>{cf}</span>
+                      <DrillColFilter field={cf} data={dataRows}
+                        active={colFilters[cf]}
+                        onChange={v=>{ setColFilters(p=>({...p,[cf]:v})); setPage(0); }}
+                        numFields={numFieldsForFilter}
+                        activeSort={colSorts[cf]}
+                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                    </div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>ref</div>
+                  </th>
+                ))}
                 {/* Separator */}
                 {viewValues.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
                 {/* Value reference columns — with DrillColFilter */}
@@ -4769,20 +4835,47 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 ))}
                 {/* Separator before collab */}
                 <th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>
-                {/* Collab input columns */}
-                {columns.map(col=>(
-                  <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:150}}>
-                    <div>{col.label}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Workflow":"Input Only"}</div>
-                  </th>
-                ))}
+                {/* Collab input columns — with DrillColFilter on collab values */}
+                {columns.map(col=>{
+                  const colData=displayRows.map((row,ri)=>{
+                    const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                    const v=values[rk+"__"+col.id];
+                    return{[col.id]:v?.value!==undefined&&v.value!==null?String(v.value):""};
+                  });
+                  return(
+                    <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:150}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{flex:1}}>{col.label}</span>
+                        <DrillColFilter field={col.id} data={colData}
+                          active={collabFilters[col.id]}
+                          onChange={v=>{ setCollabFilters(p=>({...p,[col.id]:v})); setPage(0); }}
+                          numFields={new Set()}
+                          activeSort={null} onSort={()=>{}}/>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Workflow":"Input Only"}</div>
+                    </th>
+                  );
+                })}
                 {/* Auto-paired approval columns (one per workflow col) */}
-                {columns.filter(c=>c.col_type==="workflow").map(col=>(
-                  <th key={"appr_"+col.id} style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:"#534AB7",borderBottom:"2px solid "+T.border,minWidth:140,borderLeft:"1px solid "+T.border}}>
-                    <div>Approval for {col.label}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>per column</div>
-                  </th>
-                ))}
+                {columns.filter(c=>c.col_type==="workflow").map(col=>{
+                  const statusData=displayRows.map((row,ri)=>{
+                    const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                    const v=values[rk+"__"+col.id];
+                    return{["appr_"+col.id]:v?.status||"pending"};
+                  });
+                  return(
+                    <th key={"appr_"+col.id} style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:"#534AB7",borderBottom:"2px solid "+T.border,minWidth:140,borderLeft:"1px solid "+T.border}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                        <span>Approval — {col.label}</span>
+                        <DrillColFilter field={"appr_"+col.id} data={statusData}
+                          active={collabFilters["appr_"+col.id]}
+                          onChange={v=>{ setCollabFilters(p=>({...p,["appr_"+col.id]:v})); setPage(0); }}
+                          numFields={new Set()} activeSort={null} onSort={()=>{}}/>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>per column</div>
+                    </th>
+                  );
+                })}
                 {/* Total Approval */}
                 {columns.some(c=>c.col_type==="workflow")&&(
                   <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:120,borderLeft:"2px solid "+T.borderDk}}>
@@ -4823,6 +4916,14 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </td>
                     ))}
                     {viewRows.length===0&&<td style={{padding:"8px 14px",color:T.textMd}}>{page*PAGE_SIZE+ri+1}</td>}
+                    {/* C zone — text reference cells */}
+                    {viewCols.map(cf=>(
+                      <td key={cf} style={{padding:"8px 14px",color:T.text,borderLeft:"1px solid "+T.border,
+                        maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                        title={String(row[cf]||"")}>
+                        {String(row[cf]||"—")}
+                      </td>
+                    ))}
                     {/* Separator */}
                     {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>}
                     {/* Value reference cells */}
@@ -4915,7 +5016,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 );
               })}
               {pagedRows.length===0&&(
-                <tr><td colSpan={viewRows.length+viewValues.length+columns.length+columns.filter(c=>c.col_type==="workflow").length+3} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+                <tr><td colSpan={viewRows.length+viewCols.length+viewValues.length+columns.length+columns.filter(c=>c.col_type==="workflow").length+3} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
               )}
             </tbody>
           </table>
