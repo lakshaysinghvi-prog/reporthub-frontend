@@ -4716,18 +4716,23 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     setPage(0);
   };
 
-  // Total approval badge helper
+  // Total Approval = sum of approved + modified amounts across all workflow cols for this row
   const totalApprovalBadge=(wfCols,rk)=>{
     if(!wfCols.length)return null;
-    const statuses=wfCols.map(col=>values[rk+"__"+col.id]?.status||"pending");
-    const approvedCount=statuses.filter(s=>s==="approved").length;
-    const hasRejected=statuses.some(s=>s==="rejected");
-    const hasSubmitted=statuses.some(s=>s==="submitted");
-    const allApproved=approvedCount===wfCols.length;
-    if(allApproved)return<span style={{fontSize:11,background:"#D4EDDA",color:"#155724",padding:"2px 8px",borderRadius:8,fontWeight:700,whiteSpace:"nowrap"}}>✅ {approvedCount}/{wfCols.length} Approved</span>;
-    if(hasRejected) return<span style={{fontSize:11,background:"#F8D7DA",color:"#721C24",padding:"2px 8px",borderRadius:8,fontWeight:700,whiteSpace:"nowrap"}}>❌ {approvedCount}/{wfCols.length}</span>;
-    if(hasSubmitted) return<span style={{fontSize:11,background:"#CCE5FF",color:"#004085",padding:"2px 8px",borderRadius:8,fontWeight:600,whiteSpace:"nowrap"}}>⏳ {approvedCount}/{wfCols.length}</span>;
-    return<span style={{fontSize:11,background:T.bgAlt,color:T.textMd,padding:"2px 8px",borderRadius:8,whiteSpace:"nowrap"}}>— {approvedCount}/{wfCols.length}</span>;
+    const entries=wfCols.map(col=>values[rk+"__"+col.id]);
+    const approvedSum=entries.reduce((sum,v)=>{
+      if(v&&['approved','modified'].includes(v.status)&&v.value!==null&&v.value!==undefined)
+        return sum+parseFloat(v.value)||0;
+      return sum;
+    },0);
+    const allDone=entries.every(v=>v&&['approved','modified','rejected'].includes(v.status));
+    const hasRejected=entries.some(v=>v?.status==='rejected');
+    const hasPending=entries.some(v=>!v||v.status==='pending');
+    const hasSubmitted=entries.some(v=>v?.status==='submitted');
+    const bg=allDone?(hasRejected?"#F8D7DA":"#D4EDDA"):hasSubmitted?"#CCE5FF":"#FFF3CD";
+    const clr=allDone?(hasRejected?"#721C24":"#155724"):hasSubmitted?"#004085":"#856404";
+    const label=hasPending?"—":fmtNum(approvedSum);
+    return<span style={{fontSize:12,fontWeight:700,background:bg,color:clr,padding:"3px 10px",borderRadius:8,whiteSpace:"nowrap"}}>{label}</span>;
   };
 
   // Filter chain
@@ -4826,6 +4831,21 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const pagedRows=displayRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
 
   const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
+
+  // ── Review modal derived values — computed at component scope so they're always reactive ──
+  const reviewOrigVal=reviewModal?parseFloat(String(reviewModal.currentVal||"0"))||0:0;
+  const reviewCurVal=parseFloat(reviewValue||"0")||0;
+  const reviewIsChanged=!!reviewModal&&(reviewCurVal!==reviewOrigVal);
+  const reviewIsZero=reviewIsChanged&&reviewCurVal===0;
+  const reviewCanModify=reviewIsChanged&&!reviewIsZero;
+  const reviewCanApprove=!reviewIsChanged;
+
+  // ── isOnlyReviewer: user is exclusively a reviewer (no inputter rights) ──
+  const isOnlyReviewer=!isBuilder&&columns.length>0&&columns.filter(c=>c.col_type==="workflow").every(col=>{
+    const iIds=Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]');
+    const rIds=Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]');
+    return rIds.includes(myId)&&iIds.length>0&&!iIds.includes(myId);
+  });
   const allCycles=[...cycles];
 
   return(
@@ -4872,8 +4892,8 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 </button>
               ))}
             </div>
-            {/* Submit All button — single submit for all pending workflow values */}
-            {activeCycle?.status==="open"&&columns.some(c=>c.col_type==="workflow")&&(
+            {/* Submit All button — only for inputters, hidden for pure reviewers */}
+            {activeCycle?.status==="open"&&columns.some(c=>c.col_type==="workflow")&&!isOnlyReviewer&&(
               <button onClick={submitAll}
                 style={{padding:"5px 14px",background:"#185FA5",color:"#fff",border:"none",borderRadius:7,
                   cursor:"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
@@ -5162,12 +5182,17 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                   </td>;
                 });
 
-                // Reusable approval cells — status badge only + Review button for reviewers (no per-row Submit)
+                // Reusable approval cells — status badge + amount after action + Review button
                 const renderApprovalCells=(cellRk)=>wfCols.map(col=>{
                   const dk=draftKey(cellRk,col.id);const existing=values[dk];
                   const cycleClosed=activeCycle?.status==="closed";const canR=!cycleClosed&&canReview(col);
+                  const showAmt=existing&&['approved','modified','hold'].includes(existing.status)&&existing.value!==null&&existing.value!==undefined;
+                  const rejAmt=existing?.status==='rejected';
                   return<td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
                     {existing?statusBadge(existing.status):<span style={{fontSize:11,color:T.textMd}}>—</span>}
+                    {/* Show the effective amount after action */}
+                    {showAmt&&<div style={{fontSize:12,fontWeight:600,color:T.numColor,marginTop:3}}>{fmtNum(existing.value)}</div>}
+                    {rejAmt&&<div style={{fontSize:12,color:T.textMd,marginTop:3}}>0</div>}
                     {canR&&existing?.status==="submitted"&&(
                       <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");setReviewValue(String(existing.value??""));}}
                         style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"4px auto 0"}}>
@@ -5338,95 +5363,72 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
         />
       )}
 
-      {/* Review Modal — approver can modify value; action determined by value change */}
-      {reviewModal&&(()=>{
-        const origVal=parseFloat(reviewModal.currentVal)||0;
-        const curVal=parseFloat(reviewValue)||0;
-        const isChanged=curVal!==origVal;
-        const isZero=curVal===0;
-        // Determine which actions are appropriate
-        const canApprove=!isChanged; // approve only if value unchanged
-        const canModify=isChanged&&!isZero; // modified = changed to non-zero
-        // isZero with change → only Reject makes sense (highlighted)
-        return(
-          <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-            <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(440px,92vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
-              <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:14}}>Review: {reviewModal.colLabel}</div>
+      {/* Review Modal — uses component-scope reviewIsChanged/reviewCanModify for reliable reactivity */}
+      {reviewModal&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(440px,92vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:14}}>Review: {reviewModal.colLabel}</div>
 
-              {/* Editable value */}
-              <div style={{marginBottom:14}}>
-                <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>
-                  Submitted Value — you can modify below:
-                </label>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <input type="text" inputMode="numeric" value={reviewValue}
-                    onChange={e=>setReviewValue(e.target.value.replace(/[^0-9.\-]/g,""))}
-                    style={{flex:1,padding:"8px 12px",border:"2px solid "+(isChanged?"#C8922A":T.border),
-                      borderRadius:7,fontSize:15,fontWeight:600,color:T.text,
-                      background:isChanged?"#FFFDE7":T.bgCard,outline:"none"}}/>
-                  {isChanged&&(
-                    <span style={{fontSize:11,color:"#7A3E00",fontWeight:600,whiteSpace:"nowrap"}}>
-                      {isZero?"→ Reject":"Was: "+reviewModal.currentVal}
-                    </span>
-                  )}
-                </div>
-                {isChanged&&!isZero&&(
-                  <div style={{fontSize:11,color:"#7A3E00",marginTop:4}}>
-                    ✏ Value changed — action will be recorded as <strong>MODIFIED</strong>
-                  </div>
-                )}
-                {isZero&&isChanged&&(
-                  <div style={{fontSize:11,color:"#721C24",marginTop:4}}>
-                    ⚠ Value is 0 — action will be recorded as <strong>REJECTED</strong>
-                  </div>
+            {/* Editable value — approver can modify */}
+            <div style={{marginBottom:14}}>
+              <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>
+                Submitted Value — modify if needed:
+              </label>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <input type="text" inputMode="numeric" value={reviewValue}
+                  onChange={e=>setReviewValue(e.target.value.replace(/[^0-9.\-]/g,""))}
+                  style={{flex:1,padding:"8px 12px",border:"2px solid "+(reviewIsChanged?"#C8922A":T.border),
+                    borderRadius:7,fontSize:15,fontWeight:600,color:T.text,
+                    background:reviewIsChanged?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                {reviewIsChanged&&(
+                  <span style={{fontSize:11,color:"#7A3E00",fontWeight:600,whiteSpace:"nowrap"}}>
+                    {reviewIsZero?"→ Reject":"Was: "+reviewModal.currentVal}
+                  </span>
                 )}
               </div>
+              {reviewCanModify&&<div style={{fontSize:11,color:"#7A3E00",marginTop:4}}>✏ Changed — will be saved as <strong>MODIFIED</strong></div>}
+              {reviewIsZero&&<div style={{fontSize:11,color:"#721C24",marginTop:4}}>⚠ Value is 0 — will be saved as <strong>REJECTED</strong></div>}
+            </div>
 
-              {/* Reviewer remarks */}
-              <div style={{marginBottom:16}}>
-                <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>Remarks (optional)</label>
-                <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
-                  rows={2} placeholder="Add remarks for inputter..."
-                  style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,boxSizing:"border-box",resize:"vertical"}}/>
-              </div>
+            {/* Reviewer remarks */}
+            <div style={{marginBottom:16}}>
+              <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>Remarks (optional)</label>
+              <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
+                rows={2} placeholder="Add remarks for inputter..."
+                style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,boxSizing:"border-box",resize:"vertical"}}/>
+            </div>
 
-              {/* Action buttons — 4 tags */}
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
-                <button onClick={()=>{setReviewModal(null);setReviewRemarks("");setReviewValue("");}}
-                  style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>
-                  Cancel
+            {/* Action buttons */}
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
+              <button onClick={()=>{setReviewModal(null);setReviewRemarks("");setReviewValue("");}}
+                style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>
+                Cancel
+              </button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("hold")}
+                style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                ⏸ Hold
+              </button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("rejected")}
+                style={{padding:"7px 14px",background:reviewIsZero?"#721C24":"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                  boxShadow:reviewIsZero?"0 0 0 3px rgba(163,45,45,0.4)":"none"}}>
+                ❌ Reject
+              </button>
+              {reviewCanModify&&(
+                <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("modified")}
+                  style={{padding:"7px 14px",background:"#8B4400",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                    boxShadow:"0 0 0 3px rgba(139,68,0,0.35)"}}>
+                  ✏ Modified
                 </button>
-                {/* Hold — always available */}
-                <button onClick={()=>doReview("hold")}
-                  style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
-                  ⏸ Hold
-                </button>
-                {/* Reject — always available; auto-highlighted when value=0 */}
-                <button onClick={()=>doReview("rejected")}
-                  style={{padding:"7px 14px",background:isZero?"#721C24":"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
-                    boxShadow:isZero?"0 0 0 3px rgba(163,45,45,0.4)":"none"}}>
-                  ❌ Reject
-                </button>
-                {/* Modified — only when value changed to non-zero */}
-                {canModify&&(
-                  <button onClick={()=>doReview("modified")}
-                    style={{padding:"7px 14px",background:"#8B4400",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
-                      boxShadow:"0 0 0 3px rgba(139,68,0,0.35)"}}>
-                    ✏ Modified
-                  </button>
-                )}
-                {/* Approve — only when value unchanged */}
-                <button onClick={()=>doReview("approved")} disabled={!canApprove}
-                  style={{padding:"7px 14px",background:canApprove?"#2D6A4F":"#ccc",color:"#fff",border:"none",borderRadius:7,
-                    cursor:canApprove?"pointer":"not-allowed",fontSize:12,fontWeight:700,
-                    opacity:canApprove?1:0.5}}>
-                  ✅ Approve
-                </button>
-              </div>
+              )}
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("approved")} disabled={!reviewCanApprove}
+                style={{padding:"7px 14px",background:reviewCanApprove?"#2D6A4F":"#ccc",color:"#fff",border:"none",borderRadius:7,
+                  cursor:reviewCanApprove?"pointer":"not-allowed",fontSize:12,fontWeight:700,opacity:reviewCanApprove?1:0.5}}>
+                ✅ Approve
+              </button>
             </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {/* Audit Trail Panel */}
       {auditRow&&(
