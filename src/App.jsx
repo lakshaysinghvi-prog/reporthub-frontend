@@ -3944,9 +3944,10 @@ function FieldSearch({fields,numFields,fieldStatus,onToggle,onToggleType,onToggl
 }
 
 // ── Mini builder zone helpers (used by CollabSetupPanel) ─────────────────────
-function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
+function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove,onReorder}){
   const [open,setOpen]=useState(false);
   const [q,setQ]=useState("");
+  const [dragIdx,setDragIdx]=useState(null);
   const available=allFields.filter(f=>!fields.includes(f));
   const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
   return(
@@ -3958,8 +3959,20 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
       </div>
       <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-        {fields.map(f=>(
-          <span key={f} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 8px",background:color,color:"#fff",borderRadius:10,fontSize:11}}>
+        {fields.map((f,i)=>(
+          <span key={f} draggable
+            onDragStart={()=>setDragIdx(i)}
+            onDragOver={e=>e.preventDefault()}
+            onDrop={()=>{
+              if(dragIdx===null||dragIdx===i)return;
+              const n=[...fields];n.splice(dragIdx,1);n.splice(i,0,fields[dragIdx]);
+              onReorder&&onReorder(n);setDragIdx(null);
+            }}
+            onDragEnd={()=>setDragIdx(null)}
+            style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 8px",
+              background:dragIdx===i?"rgba(0,0,0,0.3)":color,color:"#fff",borderRadius:10,fontSize:11,
+              cursor:"grab",opacity:dragIdx===i?0.5:1,userSelect:"none"}}>
+            <span style={{fontSize:9,opacity:0.6,marginRight:1}}>⠿</span>
             {f}
             <button onClick={()=>onRemove(f)} style={{background:"none",border:"none",color:"rgba(255,255,255,0.8)",cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
           </span>
@@ -3992,9 +4005,10 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
   );
 }
 
-function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAggChange}){
+function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAggChange,onReorder}){
   const [open,setOpen]=useState(false);
   const [q,setQ]=useState("");
+  const [dragIdx,setDragIdx]=useState(null);
   const assigned=values.map(v=>v.field);
   const available=allFields.filter(f=>!assigned.includes(f));
   const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
@@ -4008,8 +4022,18 @@ function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAg
       </div>
       <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
       <div style={{display:"flex",flexDirection:"column",gap:5}}>
-        {values.map(v=>(
-          <div key={v.field} style={{display:"flex",alignItems:"center",gap:5}}>
+        {values.map((v,i)=>(
+          <div key={v.field} draggable
+            onDragStart={()=>setDragIdx(i)}
+            onDragOver={e=>e.preventDefault()}
+            onDrop={()=>{
+              if(dragIdx===null||dragIdx===i)return;
+              const n=[...values];n.splice(dragIdx,1);n.splice(i,0,values[dragIdx]);
+              onReorder&&onReorder(n);setDragIdx(null);
+            }}
+            onDragEnd={()=>setDragIdx(null)}
+            style={{display:"flex",alignItems:"center",gap:5,cursor:"grab",opacity:dragIdx===i?0.4:1}}>
+            <span style={{fontSize:9,color:T.textMd,flexShrink:0}}>⠿</span>
             <span style={{flex:1,padding:"2px 8px",background:color,color:"#fff",borderRadius:10,fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.field}</span>
             <select value={v.agg} onChange={e=>onAggChange(v.field,e.target.value)}
               style={{fontSize:10,padding:"2px 4px",border:"1px solid "+T.border,borderRadius:4,background:T.bgCard,color:T.text}}>
@@ -4245,29 +4269,33 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
               {/* Zone editors */}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
                 <ZoneEditor label="🏷 Rows (R)" color={T.tagR}
-                  hint="Field(s) that identify each row — e.g. Vendor Name. Rows are summarized with drill-down."
+                  hint="Field(s) that identify each row — e.g. Vendor Name. Drag pills to reorder."
                   fields={viewRows} allFields={dataFields}
                   onAdd={f=>{if(!viewRows.includes(f))setViewRows(r=>[...r,f]);}}
-                  onRemove={f=>setViewRows(r=>r.filter(x=>x!==f))}/>
+                  onRemove={f=>setViewRows(r=>r.filter(x=>x!==f))}
+                  onReorder={setViewRows}/>
 
                 <ValuesZoneEditor label="📊 Values (V)" color={T.tagV}
-                  hint="Numeric reference columns — e.g. Net Due. Shown alongside collab columns."
+                  hint="Numeric reference columns — drag to reorder."
                   values={viewValues} allFields={dataFields}
                   onAdd={f=>{if(!viewValues.some(v=>v.field===f))setViewValues(v=>[...v,{field:f,agg:"sum"}]);}}
                   onRemove={f=>setViewValues(v=>v.filter(x=>x.field!==f))}
-                  onAggChange={(f,agg)=>setViewValues(v=>v.map(x=>x.field===f?{...x,agg}:x))}/>
+                  onAggChange={(f,agg)=>setViewValues(v=>v.map(x=>x.field===f?{...x,agg}:x))}
+                  onReorder={setViewValues}/>
 
                 <ZoneEditor label="📋 Columns (C)" color={T.tagC}
-                  hint="Optional: secondary column grouping field"
+                  hint="Optional: column grouping field (cross-tab like builder)."
                   fields={viewCols} allFields={dataFields}
                   onAdd={f=>{if(!viewCols.includes(f))setViewCols(c=>[...c,f]);}}
-                  onRemove={f=>setViewCols(c=>c.filter(x=>x!==f))}/>
+                  onRemove={f=>setViewCols(c=>c.filter(x=>x!==f))}
+                  onReorder={setViewCols}/>
 
                 <ZoneEditor label="🔍 Filters (F)" color={T.tagF}
-                  hint="Fields exposed as filter pills in the Workflow View toolbar"
+                  hint="Fields exposed as filter pills in the Workflow View toolbar."
                   fields={viewFilters} allFields={dataFields}
                   onAdd={f=>{if(!viewFilters.includes(f))setViewFilters(v=>[...v,f]);}}
-                  onRemove={f=>setViewFilters(v=>v.filter(x=>x!==f))}/>
+                  onRemove={f=>setViewFilters(v=>v.filter(x=>x!==f))}
+                  onReorder={setViewFilters}/>
               </div>
 
               <button onClick={saveViewConfig} disabled={savingView}
@@ -4498,6 +4526,13 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const rowKey=viewRows[0]||null; // primary display field
   const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
   const numFieldsForFilter=useMemo(()=>new Set(viewValues.map(v=>v.field)),[viewValues]);
+  // All raw field names + numeric field detection for the DrillDown component
+  const allDataFields=useMemo(()=>dataRows.length?Object.keys(dataRows[0]).filter(k=>!k.startsWith("__")):[],[dataRows]);
+  const allNumFields=useMemo(()=>{
+    if(!dataRows.length)return new Set();
+    const first=dataRows[0];
+    return new Set(Object.keys(first).filter(k=>{const v=first[k];return typeof v==="number"||(v!==null&&v!==undefined&&v!==""&&!isNaN(Number(v)));}));
+  },[dataRows]);
   // Unique C field values for cross-tab column headers
   const cVals=useMemo(()=>{
     if(!cField)return[];
@@ -4979,7 +5014,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                         {i===0&&isGroupRow?(
                           <span style={{display:"flex",alignItems:"center",gap:6}}>
                             <button
-                              onClick={()=>setDrillDown({rk,rows:row.__rows,label:String(row[rf]||rk)})}
+                              onClick={()=>setDrillDown({rowKey:viewRows.map(f=>String(row[f]||"")),colVal:null,rFs:viewRows,cF:null,metricLabel:"Workflow View — "+String(row[rf]||rk)})}
                               title="Drill down — view raw rows"
                               style={{background:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
                                 fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.primary,fontWeight:700}}>
@@ -5130,75 +5165,22 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
         <div style={{padding:30,color:T.textMd,fontSize:14}}>No collab columns defined yet. Use ⚙ Setup Columns & Cycle in the Workflow tab.</div>
       )}
 
-      {/* ── Drill-Down Modal — raw rows for the selected summary group ── */}
+      {/* ── Drill-Down — reuses the exact same DrillDown panel as the Report Builder ── */}
       {drillDown&&(
-        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-          <div style={{background:T.bgCard,borderRadius:12,padding:0,width:"min(900px,96vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(0,0,0,0.35)"}}>
-            {/* Header */}
-            <div style={{background:T.bgHeader,borderRadius:"12px 12px 0 0",padding:"13px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-              <div>
-                <div style={{color:T.textLt,fontWeight:700,fontSize:14}}>🔍 Drill Down — {drillDown.label}</div>
-                <div style={{color:"rgba(245,239,230,0.65)",fontSize:11,marginTop:2}}>{drillDown.rows.length} raw row{drillDown.rows.length!==1?"s":""}</div>
-              </div>
-              <button onClick={()=>setDrillDown(null)} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
-            </div>
-            {/* Table */}
-            <div style={{overflowX:"auto",overflowY:"auto",flex:1}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead>
-                  <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
-                    <th style={{padding:"8px 12px",textAlign:"left",fontWeight:600,color:T.textMd,borderBottom:"2px solid "+T.border,minWidth:36,width:36}}>#</th>
-                    {/* Show ALL fields from the raw rows */}
-                    {drillDown.rows.length>0&&Object.keys(drillDown.rows[0]).filter(k=>!k.startsWith("__")).map(f=>{
-                      const isVal=viewValues.some(v=>v.field===f);
-                      const isRow=viewRows.includes(f);
-                      return(
-                        <th key={f} style={{padding:"8px 12px",textAlign:isVal?"right":"left",fontWeight:600,
-                          color:isVal?T.tagV:isRow?T.tagR:T.textMd,
-                          borderBottom:"2px solid "+T.border,whiteSpace:"nowrap",minWidth:100}}>
-                          {f}
-                          {isVal&&<div style={{fontWeight:400,fontSize:10,color:T.textMd}}>
-                            {viewValues.find(v=>v.field===f)?.agg||""}
-                          </div>}
-                        </th>
-                      );
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {drillDown.rows.map((r,i)=>(
-                    <tr key={i} style={{background:i%2===0?T.bgCard:T.bgAlt,borderBottom:"1px solid "+T.border}}>
-                      <td style={{padding:"7px 12px",color:T.textMd,fontSize:11}}>{i+1}</td>
-                      {Object.keys(drillDown.rows[0]).filter(k=>!k.startsWith("__")).map(f=>{
-                        const isVal=viewValues.some(v=>v.field===f);
-                        const val=r[f];
-                        return(
-                          <td key={f} style={{padding:"7px 12px",textAlign:isVal?"right":"left",
-                            color:isVal?T.numColor:T.text,fontWeight:isVal?500:400,
-                            whiteSpace:"nowrap",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis"}}
-                            title={String(val??"")}>
-                            {isVal?fmtNum(val):(val===null||val===undefined||val===""?"—":String(val))}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {/* Footer */}
-            <div style={{padding:"10px 18px",borderTop:"1px solid "+T.border,display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-              <span style={{fontSize:12,color:T.textMd}}>
-                <span style={{color:T.tagR,fontWeight:600}}>■</span> Row fields &nbsp;
-                <span style={{color:T.tagV,fontWeight:600}}>■</span> Value fields
-              </span>
-              <button onClick={()=>setDrillDown(null)}
-                style={{padding:"6px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <DrillDown
+          data={dataRows}
+          target={drillDown}
+          fields={allDataFields}
+          numFields={allNumFields}
+          onClose={()=>setDrillDown(null)}
+          numFmt={numFmt}
+          savedHiddenCols={[]}
+          savedColFmts={{}}
+          onSaveHiddenCols={null}
+          onSaveColFilters={null}
+          configValues={viewValues}
+          activeFilters={colFilters}
+        />
       )}
 
       {/* Review Modal */}
