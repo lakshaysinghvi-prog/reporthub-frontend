@@ -4602,6 +4602,25 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   };
 
   const draftKey=(rk,cid)=>rk+"__"+cid;
+  const autoSaveTimers=useRef({}); // debounce handles per cell
+
+  // Submit all pending workflow values across all rows (not just current page)
+  const submitAll=async()=>{
+    if(!activeCycle||activeCycle.status==="closed")return;
+    const pending=Object.values(values).filter(v=>
+      v.status==="pending"&&v.value!==null&&v.value!==undefined&&v.value!==""
+    ).map(v=>{
+      const col=columns.find(c=>c.id===v.col_id||c.id===parseInt(v.col_id));
+      return col&&col.col_type==="workflow"&&canInput(col)?{rk:v.row_key,col}:null;
+    }).filter(Boolean);
+    if(!pending.length){setMsg("No pending values to submit");setTimeout(()=>setMsg(""),2500);return;}
+    try{
+      await Promise.all(pending.map(({rk,col})=>submitCollabValue(report.id,activeCycle.id,rk,col.id)));
+      await loadValues(activeCycle.id);
+      setMsg(`✓ Submitted ${pending.length} value${pending.length!==1?"s":""} for review`);
+      setTimeout(()=>setMsg(""),3000);
+    }catch(e){setMsg("Error: "+e.message);}
+  };
 
   const canInput=(col)=>{
     if(isBuilder)return true;
@@ -4619,13 +4638,12 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const dk=draftKey(rk,col.id);
     const draft=draftMap[dk]||{};
     const val=draft.value!==undefined?draft.value:null;
-    if(val===null||val==="")return; // nothing to save
+    if(val===null||val==="")return;
     setSaving(s=>({...s,[dk]:true}));
     try{
-      const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:draft.remarks||null});
+      const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
       setValues(v=>({...v,[dk]:saved}));
       setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
-      setMsg("✓ Saved");setTimeout(()=>setMsg(""),2000);
     }catch(e){setMsg("Error: "+e.message);}
     setSaving(s=>({...s,[dk]:false}));
   };
@@ -4846,15 +4864,52 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 </button>
               ))}
             </div>
+            {/* Submit All button — single submit for all pending workflow values */}
+            {activeCycle?.status==="open"&&columns.some(c=>c.col_type==="workflow")&&(
+              <button onClick={submitAll}
+                style={{padding:"5px 14px",background:"#185FA5",color:"#fff",border:"none",borderRadius:7,
+                  cursor:"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+                ✓ Submit All Pending
+              </button>
+            )}
             <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
               {displayRows.length.toLocaleString()} rows{totalPages>1&&` · Page ${page+1}/${totalPages}`}
             </span>
+            {/* Smart pagination */}
             {totalPages>1&&(
-              <div style={{display:"flex",gap:4}}>
+              <div style={{display:"flex",gap:3,alignItems:"center",flexShrink:0}}>
+                <button disabled={page===0} onClick={()=>setPage(0)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>«</button>
                 <button disabled={page===0} onClick={()=>setPage(p=>p-1)}
-                  style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹ Prev</button>
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹</button>
+                {/* Page number pills — up to 5 visible */}
+                {Array.from({length:totalPages},(_,i)=>i)
+                  .filter(i=>Math.abs(i-page)<=2||i===0||i===totalPages-1)
+                  .reduce((acc,i,idx,arr)=>{
+                    if(idx>0&&i-arr[idx-1]>1)acc.push("…");
+                    acc.push(i);return acc;
+                  },[])
+                  .map((item,idx)=>item==="…"
+                    ?<span key={"e"+idx} style={{fontSize:11,color:T.textMd,padding:"0 2px"}}>…</span>
+                    :<button key={item} onClick={()=>setPage(item)}
+                      style={{padding:"3px 8px",border:"1px solid "+(item===page?T.primary:T.border),borderRadius:5,
+                        cursor:"pointer",fontSize:11,fontWeight:item===page?700:400,
+                        background:item===page?T.primary:T.bgCard,
+                        color:item===page?T.textLt:T.text,minWidth:28}}>
+                      {item+1}
+                    </button>
+                  )}
                 <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)}
-                  style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>Next ›</button>
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>›</button>
+                <button disabled={page===totalPages-1} onClick={()=>setPage(totalPages-1)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>»</button>
+                {/* Direct page jump */}
+                <span style={{fontSize:11,color:T.textMd}}>Go:</span>
+                <input type="number" min={1} max={totalPages} defaultValue={page+1}
+                  key={page}
+                  onKeyDown={e=>{if(e.key==="Enter"){const v=parseInt(e.target.value)-1;if(v>=0&&v<totalPages)setPage(v);}}}
+                  onBlur={e=>{const v=parseInt(e.target.value)-1;if(v>=0&&v<totalPages)setPage(v);}}
+                  style={{width:40,padding:"3px 5px",border:"1px solid "+T.border,borderRadius:5,fontSize:11,textAlign:"center"}}/>
               </div>
             )}
           </div>
@@ -5063,44 +5118,49 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                   </>
                 ):viewValues.map(({field})=><td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,background:bg,whiteSpace:"nowrap",opacity:0.9}}>{fmtNum(r[field])}</td>);
 
-                // Reusable collab input cells
+                // Reusable collab input cells — auto-save on type (debounced), no remarks, no manual save button
                 const renderCollabCells=(cellRk)=>columns.map(col=>{
                   const dk=draftKey(cellRk,col.id);
                   const existing=values[dk];const draft=draftMap[dk];
                   const displayVal=draft?.value!==undefined?draft.value:(existing?.value!==undefined?existing.value:"");
                   const isSav=saving[dk];const cycleClosed=activeCycle?.status==="closed";const canI=!cycleClosed&&canInput(col);
-                  return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"top"}}>
-                    <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                      {canI?<input type="number" value={displayVal} placeholder="0"
-                        onChange={e=>setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:e.target.value}}))}
-                        onBlur={()=>{if(draft?.value!==undefined)saveDraft(cellRk,col);}}
-                        disabled={isSav}
-                        style={{width:90,padding:"4px 8px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,background:draft?.value!==undefined?"#FFFDE7":T.bgCard}}/>
-                      :<span style={{fontSize:13,color:T.text,minWidth:60}}>{existing?.value!==undefined&&existing.value!==null?String(existing.value):"—"}</span>}
-                    </div>
-                    {canI&&draft?.value!==undefined&&<div style={{marginTop:4,display:"flex",gap:4}}>
-                      <input value={draft.remarks||""} placeholder="Remarks (opt)"
-                        onChange={e=>setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),remarks:e.target.value}}))}
-                        style={{flex:1,padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,fontSize:11}}/>
-                      <button onClick={()=>saveDraft(cellRk,col)} disabled={isSav}
-                        style={{padding:"3px 8px",background:T.accent,color:T.textLt,border:"none",borderRadius:5,cursor:"pointer",fontSize:11}}>{isSav?"…":"Save"}</button>
-                    </div>}
+                  const isDirty=draft?.value!==undefined;
+                  return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"middle"}}>
+                    {canI?(
+                      <div style={{position:"relative",display:"inline-block"}}>
+                        <input type="number" value={displayVal} placeholder="0"
+                          onChange={e=>{
+                            const val=e.target.value;
+                            setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
+                            // Auto-save after 800ms of no typing
+                            if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
+                            autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
+                          }}
+                          disabled={isSav}
+                          style={{width:110,padding:"5px 9px",border:"1px solid "+(isDirty?"#C8922A":T.border),borderRadius:6,fontSize:13,
+                            background:isDirty?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                        {isSav&&<span style={{position:"absolute",right:-18,top:7,fontSize:10,color:T.textMd}}>…</span>}
+                      </div>
+                    ):(
+                      <span style={{fontSize:13,color:T.text,minWidth:60,display:"block",textAlign:"right",paddingRight:4}}>
+                        {existing?.value!==undefined&&existing.value!==null?String(existing.value):"—"}
+                      </span>
+                    )}
                   </td>;
                 });
 
-                // Reusable approval cells
+                // Reusable approval cells — status badge only + Review button for reviewers (no per-row Submit)
                 const renderApprovalCells=(cellRk)=>wfCols.map(col=>{
-                  const dk=draftKey(cellRk,col.id);const existing=values[dk];const isSav=saving[dk];
-                  const cycleClosed=activeCycle?.status==="closed";const canI=!cycleClosed&&canInput(col);const canR=!cycleClosed&&canReview(col);
+                  const dk=draftKey(cellRk,col.id);const existing=values[dk];
+                  const cycleClosed=activeCycle?.status==="closed";const canR=!cycleClosed&&canReview(col);
                   return<td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
-                    {existing&&<div style={{marginBottom:4}}>{statusBadge(existing.status)}</div>}
-                    {canI&&existing?.value!==undefined&&existing.value!==null&&existing?.status==="pending"&&
-                      <button onClick={()=>submitValue(cellRk,col)} disabled={isSav}
-                        style={{padding:"3px 10px",background:"#185FA5",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"0 auto"}}>Submit</button>}
-                    {canR&&existing?.status==="submitted"&&
+                    {existing?statusBadge(existing.status):<span style={{fontSize:11,color:T.textMd}}>—</span>}
+                    {canR&&existing?.status==="submitted"&&(
                       <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");}}
-                        style={{padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"0 auto"}}>Review</button>}
-                    {!existing&&<span style={{fontSize:11,color:T.textMd}}>—</span>}
+                        style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"4px auto 0"}}>
+                        Review
+                      </button>
+                    )}
                   </td>;
                 });
 
