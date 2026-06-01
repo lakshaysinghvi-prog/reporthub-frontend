@@ -39,7 +39,8 @@ export async function login(username, password) {
   }
   const data = await res.json();
   localStorage.setItem('rh_token', data.token);
-  return data; // { token, role, username }
+  if (data.id) localStorage.setItem('rh_user_id', data.id);
+  return data; // { token, role, username, id }
 }
 
 export function logout() {

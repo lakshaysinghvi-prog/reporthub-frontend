@@ -28,6 +28,15 @@ const T = {
   tagR:"#534AB7", tagC:"#0F6E56", tagV:"#8B5A2B", tagF:"#185FA5", tagK:"#4A3060",
 };
 
+// ── Parse JWT payload to extract user id ──────────────────────────────────
+function getMyUserId() {
+  try {
+    const t = localStorage.getItem('rh_token');
+    if (!t) return null;
+    return JSON.parse(atob(t.split('.')[1])).id || null;
+  } catch(e) { return null; }
+}
+
 // ── useViewport hook — true if mobile (<700px) ────────────────────────────────
 function useViewport() {
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 700 : false);
@@ -3914,6 +3923,96 @@ function WorkflowListTab({savedReports,currentUser,currentRole,onSetup,onOpenVie
   );
 }
 
+// ── Mini builder zone helpers (used by CollabSetupPanel) ─────────────────────
+function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove}){
+  const [open,setOpen]=useState(false);
+  const available=allFields.filter(f=>!fields.includes(f));
+  return(
+    <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
+      <div style={{fontSize:11,fontWeight:700,color,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span>{label}</span>
+        <button onClick={()=>setOpen(o=>!o)}
+          style={{fontSize:10,background:color,color:"#fff",border:"none",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>+ Add</button>
+      </div>
+      <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+        {fields.map(f=>(
+          <span key={f} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 8px",background:color,color:"#fff",borderRadius:10,fontSize:11}}>
+            {f}
+            <button onClick={()=>onRemove(f)} style={{background:"none",border:"none",color:"rgba(255,255,255,0.8)",cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
+          </span>
+        ))}
+        {fields.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
+      </div>
+      {open&&(
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6,maxHeight:140,overflowY:"auto"}}>
+          {available.map(f=>(
+            <div key={f} onClick={()=>{onAdd(f);setOpen(false);}}
+              style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+              onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+              {f}
+            </div>
+          ))}
+          {available.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>All fields assigned</div>}
+          <button onClick={()=>setOpen(false)}
+            style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
+            Close ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAggChange}){
+  const [open,setOpen]=useState(false);
+  const assigned=values.map(v=>v.field);
+  const available=allFields.filter(f=>!assigned.includes(f));
+  const AGGS=["sum","count","avg","min","max"];
+  return(
+    <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
+      <div style={{fontSize:11,fontWeight:700,color,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span>{label}</span>
+        <button onClick={()=>setOpen(o=>!o)}
+          style={{fontSize:10,background:color,color:"#fff",border:"none",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>+ Add</button>
+      </div>
+      <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
+      <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {values.map(v=>(
+          <div key={v.field} style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{flex:1,padding:"2px 8px",background:color,color:"#fff",borderRadius:10,fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.field}</span>
+            <select value={v.agg} onChange={e=>onAggChange(v.field,e.target.value)}
+              style={{fontSize:10,padding:"2px 4px",border:"1px solid "+T.border,borderRadius:4,background:T.bgCard,color:T.text}}>
+              {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+            </select>
+            <button onClick={()=>onRemove(v.field)}
+              style={{background:"none",border:"none",color:T.textMd,cursor:"pointer",fontSize:15,padding:0,lineHeight:1}}>×</button>
+          </div>
+        ))}
+        {values.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
+      </div>
+      {open&&(
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6,maxHeight:140,overflowY:"auto"}}>
+          {available.map(f=>(
+            <div key={f} onClick={()=>{onAdd(f);setOpen(false);}}
+              style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+              onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+              {f}
+            </div>
+          ))}
+          {available.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>All fields assigned</div>}
+          <button onClick={()=>setOpen(false)}
+            style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
+            Close ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Phase 3: Collab Setup Panel (modal) ───────────────────────────────────────
 // Builder configures collab columns, row key, and manages cycles
 function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
@@ -3927,11 +4026,13 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [newCycleLabel,setNewCycleLabel]=useState("");
   const [cycleHistViewers,setCycleHistViewers]=useState([]);
   const [openingCycle,setOpeningCycle]=useState(false);
-  const [rowKeyField,setRowKeyField]=useState(report?.config?.collab_row_key||"");
-  const [savingRowKey,setSavingRowKey]=useState(false);
-  const [displayFields,setDisplayFields]=useState(report?.config?.collab_display_fields||[]);
-  const [savingDisplay,setSavingDisplay]=useState(false);
   const [dataFields,setDataFields]=useState([]);
+  const _setupCfg=typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{});
+  const [viewRows,setViewRows]=useState(_setupCfg.collab_rows||((_setupCfg.collab_row_key)?[_setupCfg.collab_row_key]:[]));
+  const [viewCols,setViewCols]=useState(_setupCfg.collab_cols||[]);
+  const [viewValues,setViewValues]=useState(_setupCfg.collab_values||(Array.isArray(_setupCfg.collab_display_fields)?_setupCfg.collab_display_fields:[]).map(f=>({field:f,agg:"sum"})));
+  const [viewFilters,setViewFilters]=useState(_setupCfg.collab_filters||[]);
+  const [savingView,setSavingView]=useState(false);
 
   // ColForm state — no ref_column (display fields handle context columns)
   const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[]};
@@ -3978,24 +4079,19 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
     })();
   },[report.id]);
 
-  const saveRowKey=async()=>{
-    setSavingRowKey(true);
+  const saveViewConfig=async()=>{
+    setSavingView(true);
     try{
-      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null,collab_display_fields:displayFields};
+      const newCfg={...(report.config||{}),
+        collab_rows:viewRows, collab_cols:viewCols,
+        collab_values:viewValues, collab_filters:viewFilters,
+        collab_row_key:viewRows[0]||null,             // backward compat
+        collab_display_fields:viewValues.map(v=>v.field), // backward compat
+      };
       await updateReportConfig(report.id,newCfg,report.name);
-      setMsg("✓ Row key saved");setTimeout(()=>setMsg(""),2000);
+      setMsg("✓ View config saved");setTimeout(()=>setMsg(""),2000);
     }catch(e){setMsg("Error: "+e.message);}
-    setSavingRowKey(false);
-  };
-
-  const saveDisplayFields=async()=>{
-    setSavingDisplay(true);
-    try{
-      const newCfg={...(report.config||{}),collab_row_key:rowKeyField||null,collab_display_fields:displayFields};
-      await updateReportConfig(report.id,newCfg,report.name);
-      setMsg("✓ Display columns saved");setTimeout(()=>setMsg(""),2000);
-    }catch(e){setMsg("Error: "+e.message);}
-    setSavingDisplay(false);
+    setSavingView(false);
   };
 
   const openCycle=async()=>{
@@ -4075,52 +4171,73 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
           {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",border:"1px solid #A5D6A7",borderRadius:7,padding:"8px 14px",fontSize:13,marginBottom:16}}>{msg}</div>}
           {loading&&<div style={{color:T.textMd,padding:20}}>Loading…</div>}
 
-          {/* ── Row Key + Display Fields ── */}
+          {/* ── View Configuration (Mini Report Builder) ── */}
           {!loading&&(
             <div style={{marginBottom:20,background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:16}}>
-              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:4}}>Workflow Columns Setup</div>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:4}}>📐 View Configuration</div>
               <div style={{fontSize:12,color:T.textMd,marginBottom:14,lineHeight:1.5}}>
-                Choose which data columns appear in the Workflow View. The <strong>Row Identifier</strong> uniquely identifies each row. <strong>Display columns</strong> appear as view-only reference columns.
+                Configure how data appears in the Workflow View — same field zones as the Report Builder.
+                The view always summarizes by <strong>Rows (R)</strong> with drill-down, shows <strong>Values (V)</strong> as reference columns,
+                and exposes <strong>Filters (F)</strong> as filter pills.
               </div>
 
-              {/* Row Identifier */}
-              <div style={{marginBottom:14}}>
-                <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Row Identifier *</label>
-                <div style={{fontSize:11,color:T.textMd,marginBottom:4}}>The column that uniquely identifies each row (e.g. Vendor Name, Vendor Code)</div>
-                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                  <select value={rowKeyField} onChange={e=>setRowKeyField(e.target.value)}
-                    style={{flex:1,minWidth:140,padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13}}>
-                    <option value="">— Select a field —</option>
-                    {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
-                  </select>
+              {/* All fields overview */}
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:600,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+                  All Fields ({dataFields.length})
                 </div>
-                {rowKeyField&&<div style={{marginTop:4,fontSize:12,color:T.success}}>✓ Set to: <strong>{rowKeyField}</strong></div>}
-              </div>
-
-              {/* Display Columns */}
-              <div style={{marginBottom:14}}>
-                <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Display Columns (view-only context shown in Workflow View)</label>
-                <div style={{fontSize:11,color:T.textMd,marginBottom:6}}>Select any additional columns from the report data to show alongside input columns (e.g. Net Due, Bill Value)</div>
-                {dataFields.length===0&&<div style={{fontSize:12,color:T.warning}}>⚠ No fields loaded — save the report with data first</div>}
-                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
-                  {dataFields.filter(f=>f!==rowKeyField).map(f=>{
-                    const sel=displayFields.includes(f);
+                <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"8px 10px",background:T.bgAlt,borderRadius:7,border:"1px solid "+T.border,minHeight:36}}>
+                  {dataFields.map(f=>{
+                    const inR=viewRows.includes(f);
+                    const inC=viewCols.includes(f);
+                    const inV=viewValues.some(v=>v.field===f);
+                    const inF=viewFilters.includes(f);
+                    const zone=inR?"R":inC?"C":inV?"V":inF?"F":null;
+                    const zc={R:T.tagR,C:T.tagC,V:T.tagV,F:T.tagF};
                     return(
-                      <button key={f} onClick={()=>setDisplayFields(d=>sel?d.filter(x=>x!==f):[...d,f])}
-                        style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:sel?700:400,
-                          background:sel?T.accent:"none",color:sel?T.textLt:T.text,
-                          border:"1px solid "+(sel?T.accent:T.border)}}>
+                      <span key={f} style={{padding:"2px 9px",borderRadius:11,fontSize:11,
+                        background:zone?zc[zone]:T.bgCard,color:zone?"#fff":T.text,
+                        border:"1px solid "+(zone?zc[zone]:T.border)}}>
+                        {zone&&<span style={{fontSize:9,fontWeight:700,marginRight:3,opacity:0.85}}>[{zone}]</span>}
                         {f}
-                      </button>
+                      </span>
                     );
                   })}
+                  {dataFields.length===0&&<span style={{fontSize:12,color:T.textMd}}>⚠ No fields — upload data first</span>}
                 </div>
-                {displayFields.length>0&&<div style={{marginTop:6,fontSize:12,color:T.success}}>✓ Showing: <strong>{displayFields.join(", ")}</strong></div>}
               </div>
 
-              <button onClick={saveDisplayFields} disabled={savingDisplay||savingRowKey}
-                style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700,opacity:(savingDisplay||savingRowKey)?0.6:1}}>
-                {savingDisplay?"Saving…":"Save Settings"}
+              {/* Zone editors */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+                <ZoneEditor label="🏷 Rows (R)" color={T.tagR}
+                  hint="Field(s) that identify each row — e.g. Vendor Name. Rows are summarized with drill-down."
+                  fields={viewRows} allFields={dataFields}
+                  onAdd={f=>{if(!viewRows.includes(f))setViewRows(r=>[...r,f]);}}
+                  onRemove={f=>setViewRows(r=>r.filter(x=>x!==f))}/>
+
+                <ValuesZoneEditor label="📊 Values (V)" color={T.tagV}
+                  hint="Numeric reference columns — e.g. Net Due. Shown alongside collab columns."
+                  values={viewValues} allFields={dataFields}
+                  onAdd={f=>{if(!viewValues.some(v=>v.field===f))setViewValues(v=>[...v,{field:f,agg:"sum"}]);}}
+                  onRemove={f=>setViewValues(v=>v.filter(x=>x.field!==f))}
+                  onAggChange={(f,agg)=>setViewValues(v=>v.map(x=>x.field===f?{...x,agg}:x))}/>
+
+                <ZoneEditor label="📋 Columns (C)" color={T.tagC}
+                  hint="Optional: secondary column grouping field"
+                  fields={viewCols} allFields={dataFields}
+                  onAdd={f=>{if(!viewCols.includes(f))setViewCols(c=>[...c,f]);}}
+                  onRemove={f=>setViewCols(c=>c.filter(x=>x!==f))}/>
+
+                <ZoneEditor label="🔍 Filters (F)" color={T.tagF}
+                  hint="Fields exposed as filter pills in the Workflow View toolbar"
+                  fields={viewFilters} allFields={dataFields}
+                  onAdd={f=>{if(!viewFilters.includes(f))setViewFilters(v=>[...v,f]);}}
+                  onRemove={f=>setViewFilters(v=>v.filter(x=>x!==f))}/>
+              </div>
+
+              <button onClick={saveViewConfig} disabled={savingView}
+                style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700,opacity:savingView?0.6:1}}>
+                {savingView?"Saving…":"Save View Config"}
               </button>
             </div>
           )}
@@ -4292,32 +4409,29 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [histMode,setHistMode]=useState(false);
   // Filter/sort/display state
   const [search,setSearch]=useState("");
-  const [sortCol,setSortCol]=useState(null); // {field, dir: 'asc'|'desc'}
-  const sortColRef=useRef(null); // always-current ref to avoid stale closure
+  const [sortCol,setSortCol]=useState(null);
   const [showNonZeroOnly,setShowNonZeroOnly]=useState(false);
-  const [numFmt,setNumFmt]=useState("units"); // 'units'|'L'|'Cr'
+  const [numFmt,setNumFmt]=useState("units");
   const [page,setPage]=useState(0);
   const PAGE_SIZE=100;
-  const [colFilters,setColFilters]=useState({}); // {field: Set<string>}
-  const [filterOpen,setFilterOpen]=useState(null); // field name of open filter dropdown
-  const [summarize,setSummarize]=useState(false); // group rows by rowKey
-  const [expanded,setExpanded]=useState(new Set()); // expanded group keys
+  const [colFilters,setColFilters]=useState({}); // {field: string[]|undefined}
+  const [expanded,setExpanded]=useState(new Set());
+  // Fresh config from API (overrides stale prop after Save View Config)
+  const [freshConfig,setFreshConfig]=useState(null);
 
   // Determine user's roles in each column
-  const myId=currentUser?.id;
+  const myId=currentUser?.id||getMyUserId(); // fallback: decode from JWT
   const isBuilder=['admin','subadmin','subadmin_user'].includes(currentRole);
 
-  const rowKey=report?.config?.collab_row_key; // field name that uniquely identifies each row
-  const displayFields=Array.isArray(report?.config?.collab_display_fields)?report.config.collab_display_fields:[];
+  // Derive view config — prefer freshly-loaded config to avoid stale props
+  const _ac=freshConfig||(typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{}));
+  const viewRows=_ac.collab_rows||((_ac.collab_row_key)?[_ac.collab_row_key]:[]);
+  const viewValues=_ac.collab_values||(Array.isArray(_ac.collab_display_fields)?_ac.collab_display_fields:[]).map(f=>({field:f,agg:"sum"}));
+  const viewFilters=_ac.collab_filters||[];
+  const rowKey=viewRows[0]||null; // primary display field
+  const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
 
   useEffect(()=>{loadAll();},[report.id]);
-  // Close filter dropdown on outside click
-  useEffect(()=>{
-    if(!filterOpen)return;
-    const close=()=>setFilterOpen(null);
-    document.addEventListener("click",close);
-    return()=>document.removeEventListener("click",close);
-  },[filterOpen]);
 
   const loadAll=async()=>{
     setLoading(true);
@@ -4330,11 +4444,19 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
       setColumns(cols);
       setCycles(cycs);
       setDataRows(rd.rows||[]);
+      // Fetch fresh report config to get latest row key / display fields
+      try{
+        const fields=await getReportFields(report.id); // re-use existing endpoint
+        // Also get fresh config from reports list
+        const reports=await getReports();
+        const fresh=reports.find(r=>r.id===report.id);
+        if(fresh){
+          const cfg=typeof fresh.config==="string"?JSON.parse(fresh.config||"{}"):(fresh.config||{});
+          setFreshConfig(cfg);
+        }
+      }catch(e2){/* silent — fall back to prop */}
       const open=cycs.find(c=>c.status==="open");
-      if(open){
-        setActiveCycle(open);
-        await loadValues(open.id);
-      }
+      if(open){ setActiveCycle(open); await loadValues(open.id); }
     }catch(e){setMsg("Error: "+e.message);}
     setLoading(false);
   };
@@ -4432,99 +4554,74 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     return n.toLocaleString('en-IN',{maximumFractionDigits:2});
   };
 
-  // Sort toggle — uses ref to avoid stale closure on rapid clicks
+  // Sort toggle
   const toggleSort=(field)=>{
-    const cur=sortColRef.current;
-    const next=cur&&cur.field===field
-      ?{field,dir:cur.dir==="asc"?"desc":"asc"}
-      :{field,dir:"asc"};
-    sortColRef.current=next;
-    setSortCol(next);
-    setPage(0);
-  };
-
-  // Unique values for a field (for column filter dropdowns)
-  const colUniqueVals=useCallback((field)=>{
-    const s=new Set();
-    dataRows.forEach(r=>s.add(String(r[field]??"")));
-    return [...s].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-  },[dataRows]);
-
-  // Toggle a value in a column filter
-  const toggleColFilter=(field,val)=>{
-    setColFilters(prev=>{
-      const cur=prev[field]?new Set(prev[field]):new Set(colUniqueVals(field));
-      if(cur.has(val)) cur.delete(val); else cur.add(val);
-      // If all selected = same as no filter
-      const all=colUniqueVals(field);
-      if(cur.size===all.length) { const n={...prev}; delete n[field]; return n; }
-      return {...prev,[field]:cur};
+    setSortCol(s=>{
+      const next=s&&s.field===field?{field,dir:s.dir==="asc"?"desc":"asc"}:{field,dir:"asc"};
+      return next;
     });
     setPage(0);
   };
-  const clearColFilter=(field)=>{setColFilters(p=>{const n={...p};delete n[field];return n;});setPage(0);};
 
-  // Filter chain: access → search → col filters → nonzero → sort → paginate
-  const afterSearch=useMemo(()=>{
-    let rows=dataRows; // show all rows to everyone — canInput/canReview controls edit permissions
-    if(search.trim()){
-      const q=search.trim().toLowerCase();
-      const fields=[rowKey,...displayFields].filter(Boolean);
-      rows=rows.filter(r=>fields.some(f=>String(r[f]||"").toLowerCase().includes(q)));
-    }
-    return rows;
-  },[dataRows,search,rowKey,displayFields]);
+  // Total approval badge helper
+  const totalApprovalBadge=(wfCols,rk)=>{
+    if(!wfCols.length)return null;
+    const statuses=wfCols.map(col=>values[rk+"__"+col.id]?.status||"pending");
+    const approvedCount=statuses.filter(s=>s==="approved").length;
+    const hasRejected=statuses.some(s=>s==="rejected");
+    const hasSubmitted=statuses.some(s=>s==="submitted");
+    const allApproved=approvedCount===wfCols.length;
+    if(allApproved)return<span style={{fontSize:11,background:"#D4EDDA",color:"#155724",padding:"2px 8px",borderRadius:8,fontWeight:700,whiteSpace:"nowrap"}}>✅ {approvedCount}/{wfCols.length} Approved</span>;
+    if(hasRejected) return<span style={{fontSize:11,background:"#F8D7DA",color:"#721C24",padding:"2px 8px",borderRadius:8,fontWeight:700,whiteSpace:"nowrap"}}>❌ {approvedCount}/{wfCols.length}</span>;
+    if(hasSubmitted) return<span style={{fontSize:11,background:"#CCE5FF",color:"#004085",padding:"2px 8px",borderRadius:8,fontWeight:600,whiteSpace:"nowrap"}}>⏳ {approvedCount}/{wfCols.length}</span>;
+    return<span style={{fontSize:11,background:T.bgAlt,color:T.textMd,padding:"2px 8px",borderRadius:8,whiteSpace:"nowrap"}}>— {approvedCount}/{wfCols.length}</span>;
+  };
 
-  const afterColFilter=useMemo(()=>{
-    const active=Object.entries(colFilters).filter(([,v])=>v&&v.size>0);
-    if(!active.length) return afterSearch;
-    return afterSearch.filter(row=>active.every(([f,vals])=>vals.has(String(row[f]??""))));
-  },[afterSearch,colFilters]);
-
-  const afterNonZero=useMemo(()=>{
-    if(!showNonZeroOnly) return afterColFilter;
-    return afterColFilter.filter((row,ri)=>{
-      const rk=rowKey?String(row[rowKey]||""):String(ri);
-      return columns.some(col=>{
-        const v=values[rk+"__"+col.id];
-        return v&&Number(v.value)!==0;
-      });
+  // Filter chain
+  let filteredRows=dataRows;
+  if(search.trim()){
+    const q=search.trim().toLowerCase();
+    const flds=[...viewRows,...viewValues.map(v=>v.field)].filter(Boolean);
+    filteredRows=filteredRows.filter(r=>flds.some(f=>String(r[f]||"").toLowerCase().includes(q)));
+  }
+  const activeColFilters=Object.entries(colFilters).filter(([,v])=>Array.isArray(v)&&v.length>0);
+  if(activeColFilters.length){
+    filteredRows=filteredRows.filter(row=>activeColFilters.every(([f,vals])=>vals.includes(String(row[f]??""))));
+  }
+  if(showNonZeroOnly){
+    filteredRows=filteredRows.filter((row,ri)=>{
+      const rk=computeRK(row,ri);
+      return columns.some(col=>{const v=values[rk+"__"+col.id];return v&&Number(v.value)!==0;});
     });
-  },[afterColFilter,showNonZeroOnly,rowKey,columns,values]);
-
-  const sorted=useMemo(()=>{
-    if(!sortCol) return afterNonZero;
-    return [...afterNonZero].sort((a,b)=>{
+  }
+  // Sort
+  if(sortCol){
+    filteredRows=[...filteredRows].sort((a,b)=>{
       const av=a[sortCol.field],bv=b[sortCol.field];
       const an=Number(av),bn=Number(bv);
       const cmp=!isNaN(an)&&!isNaN(bn)?an-bn:String(av??"").localeCompare(String(bv??""),undefined,{numeric:true});
       return sortCol.dir==="asc"?cmp:-cmp;
     });
-  },[afterNonZero,sortCol]);
-
-  // Summarize: group rows by rowKey, aggregate display fields
-  const summarizedRows=useMemo(()=>{
-    if(!summarize||!rowKey) return null;
-    const groups={};
-    const order=[];
-    sorted.forEach(row=>{
-      const k=String(row[rowKey]||"");
-      if(!groups[k]){groups[k]={...row,__rows:[row],__count:1};order.push(k);}
-      else{
-        groups[k].__rows.push(row);
-        groups[k].__count++;
-        displayFields.forEach(f=>{
-          const n=Number(row[f]);
-          if(!isNaN(n)) groups[k][f]=(Number(groups[k][f])||0)+n;
-        });
-      }
+  }
+  // Always summarize by viewRows key (like pivot), expose drill-down via expand
+  let displayRows=filteredRows;
+  if(viewRows.length>0){
+    const groups={};const order=[];
+    filteredRows.forEach((row,ri)=>{
+      const k=computeRK(row,ri);
+      if(!groups[k]){groups[k]={...row,__rk:k,__rows:[row],__count:1};order.push(k);}
+      else{groups[k].__rows.push(row);groups[k].__count++;}
     });
-    return order.map(k=>groups[k]);
-  },[sorted,rowKey,displayFields,summarize]);
-
-  const baseRows=summarize&&summarizedRows?summarizedRows:sorted;
-  const totalPages=Math.ceil(baseRows.length/PAGE_SIZE);
-  const pagedRows=baseRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
+    // Aggregate value fields using doAgg
+    order.forEach(k=>{
+      viewValues.forEach(({field,agg})=>{
+        groups[k][field]=doAgg(groups[k].__rows,field,agg);
+      });
+    });
+    displayRows=order.map(k=>groups[k]);
+  }
+  const totalPages=Math.ceil(displayRows.length/PAGE_SIZE);
+  const pagedRows=displayRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
 
   const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
   const allCycles=[...cycles];
@@ -4555,42 +4652,51 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
       {/* Filter toolbar */}
       {!loading&&dataRows.length>0&&(
-        <div style={{background:T.bgAlt,borderBottom:"1px solid "+T.border,padding:"8px 14px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",flexShrink:0}}>
-          {/* Search */}
-          <input value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} placeholder="🔍 Search by vendor / row key…"
-            style={{padding:"5px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,minWidth:200,flex:1,maxWidth:300,outline:"none"}}/>
-          {/* Non-zero toggle */}
-          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
-            <input type="checkbox" checked={showNonZeroOnly} onChange={e=>{setShowNonZeroOnly(e.target.checked);setPage(0);}}/>
-            Has values only
-          </label>
-          {/* Number format */}
-          <div style={{display:"flex",gap:0,border:"1px solid "+T.border,borderRadius:7,overflow:"hidden"}}>
-            {[{k:"units",l:"Units"},{k:"L",l:"Lakhs"},{k:"Cr",l:"Crores"}].map(f=>(
-              <button key={f.k} onClick={()=>setNumFmt(f.k)}
-                style={{padding:"4px 10px",border:"none",background:numFmt===f.k?T.primary:T.bgCard,
-                  color:numFmt===f.k?T.textLt:T.textMd,cursor:"pointer",fontSize:11,fontWeight:numFmt===f.k?700:400}}>
-                {f.l}
-              </button>
-            ))}
+        <div style={{background:T.bgAlt,borderBottom:"1px solid "+T.border,padding:"8px 14px",flexShrink:0}}>
+          {/* Row 1: Search + controls + pagination */}
+          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:viewFilters.length>0?8:0}}>
+            <input value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} placeholder="🔍 Search…"
+              style={{padding:"5px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,minWidth:180,flex:1,maxWidth:280,outline:"none"}}/>
+            <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
+              <input type="checkbox" checked={showNonZeroOnly} onChange={e=>{setShowNonZeroOnly(e.target.checked);setPage(0);}}/>
+              Has values only
+            </label>
+            <div style={{display:"flex",gap:0,border:"1px solid "+T.border,borderRadius:7,overflow:"hidden"}}>
+              {[{k:"units",l:"Units"},{k:"L",l:"Lakhs"},{k:"Cr",l:"Crores"}].map(f=>(
+                <button key={f.k} onClick={()=>setNumFmt(f.k)}
+                  style={{padding:"4px 10px",border:"none",background:numFmt===f.k?T.primary:T.bgCard,
+                    color:numFmt===f.k?T.textLt:T.textMd,cursor:"pointer",fontSize:11,fontWeight:numFmt===f.k?700:400}}>
+                  {f.l}
+                </button>
+              ))}
+            </div>
+            <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
+              {displayRows.length.toLocaleString()} rows{totalPages>1&&` · Page ${page+1}/${totalPages}`}
+            </span>
+            {totalPages>1&&(
+              <div style={{display:"flex",gap:4}}>
+                <button disabled={page===0} onClick={()=>setPage(p=>p-1)}
+                  style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹ Prev</button>
+                <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)}
+                  style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>Next ›</button>
+              </div>
+            )}
           </div>
-          {/* Summarize toggle */}
-          {rowKey&&<label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
-            <input type="checkbox" checked={summarize} onChange={e=>{setSummarize(e.target.checked);setPage(0);setExpanded(new Set());}}/>
-            Summarize by {rowKey}
-          </label>}
-          {/* Row count */}
-          <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
-            {baseRows.length.toLocaleString()} rows
-            {totalPages>1&&` · Page ${page+1}/${totalPages}`}
-          </span>
-          {/* Pagination */}
-          {totalPages>1&&(
-            <div style={{display:"flex",gap:4}}>
-              <button disabled={page===0} onClick={()=>setPage(p=>p-1)}
-                style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹ Prev</button>
-              <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)}
-                style={{padding:"3px 8px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>Next ›</button>
+          {/* Row 2: Slicer filter pills (same as builder report) */}
+          {viewFilters.length>0&&(
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:11,fontWeight:600,color:T.textMd}}>Filters:</span>
+              {viewFilters.map(f=>(
+                <Slicer key={f} field={f} data={dataRows}
+                  active={colFilters[f]}
+                  onChange={v=>{ setColFilters(p=>({...p,[f]:v})); setPage(0); }}/>
+              ))}
+              {Object.values(colFilters).some(v=>v!==undefined&&v!==null)&&(
+                <button onClick={()=>{setColFilters({});setPage(0);}}
+                  style={{fontSize:11,padding:"5px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",color:T.textMd}}>
+                  Clear all
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -4611,100 +4717,104 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
-                <th onClick={rowKey?()=>toggleSort(rowKey):undefined}
-                  style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:180,cursor:rowKey?"pointer":"default",userSelect:"none"}}>
-                  {rowKey
-                    ?<span style={{display:"flex",alignItems:"center",gap:4}}>{rowKey}<span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rowKey?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span></span>
-                    :<span style={{color:T.textMd,fontStyle:"italic",fontWeight:400,fontSize:11}}>Row — set identifier in ⚙ Setup</span>}
-                </th>
-                {displayFields.map((rf,rfi)=>{
-                  const hasFilter=colFilters[rf]&&colFilters[rf].size>0;
-                  const isOpen=filterOpen===rf;
-                  const uniqueVals=isOpen?colUniqueVals(rf):[];
-                  const selectedVals=colFilters[rf]||(isOpen?new Set(uniqueVals):null);
-                  return(
-                  <th key={rf} style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
-                    borderBottom:"2px solid "+T.border,minWidth:130,position:"relative",
-                    borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
-                    <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:4}}>
-                      <span onClick={()=>toggleSort(rf)} style={{cursor:"pointer",userSelect:"none",display:"flex",alignItems:"center",gap:3}}>
-                        {rf}
-                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
-                      </span>
-                      <span onClick={e=>{e.stopPropagation();setFilterOpen(isOpen?null:rf);}}
-                        title="Filter" style={{cursor:"pointer",fontSize:11,color:hasFilter?T.accent:T.textMd,fontWeight:hasFilter?700:400,
-                          background:hasFilter?"rgba(200,146,42,0.12)":"none",borderRadius:3,padding:"0 3px",userSelect:"none"}}>▼</span>
-                    </div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd,letterSpacing:0.3}}>view only</div>
-                    {/* Filter dropdown */}
-                    {isOpen&&(
-                      <div onClick={e=>e.stopPropagation()}
-                        style={{position:"absolute",top:"100%",right:0,zIndex:50,background:T.bgCard,border:"1px solid "+T.border,
-                          borderRadius:8,boxShadow:"0 6px 20px rgba(0,0,0,0.15)",minWidth:180,maxHeight:280,overflow:"auto",padding:6}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 6px 6px",borderBottom:"1px solid "+T.border,marginBottom:4}}>
-                          <span style={{fontSize:11,fontWeight:600,color:T.text}}>Filter: {rf}</span>
-                          <button onClick={()=>{clearColFilter(rf);setFilterOpen(null);}}
-                            style={{fontSize:10,color:T.accent,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>Clear</button>
-                        </div>
-                        {uniqueVals.map(v=>{
-                          const checked=!selectedVals||selectedVals.has(v);
-                          return(
-                          <label key={v} style={{display:"flex",alignItems:"center",gap:7,padding:"4px 6px",cursor:"pointer",borderRadius:4,
-                            background:!checked?"rgba(200,146,42,0.06)":"none",fontSize:12}}>
-                            <input type="checkbox" checked={checked} onChange={()=>toggleColFilter(rf,v)} style={{cursor:"pointer"}}/>
-                            <span style={{color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:130}}>{v||"(blank)"}</span>
-                          </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </th>
-                  );
-                })}
-                {displayFields.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
-                {columns.map(col=>(
-                  <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:160}}>
-                    <div>{col.label}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>
-                      {col.col_type==="workflow"?"Workflow":"Input Only"}
-                    </div>
+                {/* Row label columns */}
+                {viewRows.map((rf,i)=>(
+                  <th key={rf} onClick={()=>toggleSort(rf)}
+                    style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,
+                      borderBottom:"2px solid "+T.border,minWidth:180,cursor:"pointer",userSelect:"none",
+                      borderLeft:i>0?"1px solid "+T.border:"none"}}>
+                    <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      {rf}
+                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                    </span>
                   </th>
                 ))}
+                {viewRows.length===0&&(
+                  <th style={{padding:"9px 14px",fontWeight:400,color:T.textMd,fontStyle:"italic",fontSize:11,borderBottom:"2px solid "+T.border}}>
+                    Row — set Rows (R) in ⚙ Setup
+                  </th>
+                )}
+                {/* Separator */}
+                {viewValues.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
+                {/* Value reference columns */}
+                {viewValues.map(({field,agg},i)=>(
+                  <th key={field} onClick={()=>toggleSort(field)}
+                    style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                      borderBottom:"2px solid "+T.border,minWidth:120,cursor:"pointer",userSelect:"none"}}>
+                    <span style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
+                      {field}
+                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                    </span>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                  </th>
+                ))}
+                {/* Separator before collab */}
+                <th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>
+                {/* Collab input columns */}
+                {columns.map(col=>(
+                  <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:150}}>
+                    <div>{col.label}</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Input":"Input Only"}</div>
+                  </th>
+                ))}
+                {/* Auto-paired approval columns (one per workflow col) */}
+                {columns.filter(c=>c.col_type==="workflow").map(col=>(
+                  <th key={"appr_"+col.id} style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:"#534AB7",borderBottom:"2px solid "+T.border,minWidth:140,borderLeft:"1px solid "+T.border}}>
+                    <div>Approval for {col.label}</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>per column</div>
+                  </th>
+                ))}
+                {/* Total Approval */}
+                {columns.some(c=>c.col_type==="workflow")&&(
+                  <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:120,borderLeft:"2px solid "+T.borderDk}}>
+                    Total Approval
+                  </th>
+                )}
                 <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,width:60}}>Trail</th>
               </tr>
             </thead>
             <tbody>
               {pagedRows.map((row,ri)=>{
                 const rowBg=ri%2===0?T.bgCard:T.bgAlt;
-                const rk=rowKey?String(row[rowKey]||""):String(page*PAGE_SIZE+ri);
-                const isGroupRow=summarize&&row.__rows;
+                const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                const isGroupRow=row.__rows&&row.__rows.length>0;
                 const isExpanded=expanded.has(rk);
+                const wfCols=columns.filter(c=>c.col_type==="workflow");
                 return(
                   <React.Fragment key={rk}>
                   <tr style={{background:rowBg,borderBottom:"1px solid "+T.border}}>
-                    <td style={{padding:"8px 14px",fontWeight:600,color:T.text,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
-                        title={rowKey?String(row[rowKey]||""):String(page*PAGE_SIZE+ri+1)}>
-                      {isGroupRow?(
-                        <span style={{display:"flex",alignItems:"center",gap:6}}>
-                          <button onClick={()=>setExpanded(e=>{const s=new Set(e);s.has(rk)?s.delete(rk):s.add(rk);return s;})}
-                            style={{background:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
-                              fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.textMd}}>
-                            {isExpanded?"−":"+"}
-                          </button>
-                          <span>{row[rowKey]||rk}</span>
-                          <span style={{fontSize:10,color:T.textMd,fontWeight:400}}>({row.__count})</span>
-                        </span>
-                      ):(rowKey?row[rowKey]:page*PAGE_SIZE+ri+1)}
-                    </td>
-                    {displayFields.map((rf,rfi)=>(
-                      <td key={rf} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
-                        background:rowBg,whiteSpace:"nowrap",
-                        borderLeft:rfi===0?"2px solid "+T.borderDk:"none",
-                        opacity:0.85}}>
-                        {fmtNum(row[rf])}
+                    {/* Row label cells */}
+                    {viewRows.map((rf,i)=>(
+                      <td key={rf} style={{padding:"8px 14px",fontWeight:600,color:T.text,
+                        maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                        borderLeft:i>0?"1px solid "+T.border:"none"}}
+                        title={String(row[rf]||"")}>
+                        {i===0&&isGroupRow?(
+                          <span style={{display:"flex",alignItems:"center",gap:6}}>
+                            <button onClick={()=>setExpanded(e=>{const s=new Set(e);s.has(rk)?s.delete(rk):s.add(rk);return s;})}
+                              style={{background:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
+                                fontSize:10,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:T.textMd}}>
+                              {isExpanded?"−":"+"}
+                            </button>
+                            <span>{row[rf]||rk}</span>
+                            <span style={{fontSize:10,color:T.textMd,fontWeight:400}}>({row.__count})</span>
+                          </span>
+                        ):(String(row[rf]||""))}
                       </td>
                     ))}
-                    {displayFields.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
+                    {viewRows.length===0&&<td style={{padding:"8px 14px",color:T.textMd}}>{page*PAGE_SIZE+ri+1}</td>}
+                    {/* Separator */}
+                    {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>}
+                    {/* Value reference cells */}
+                    {viewValues.map(({field},i)=>(
+                      <td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
+                        background:rowBg,whiteSpace:"nowrap",opacity:0.9}}>
+                        {fmtNum(row[field])}
+                      </td>
+                    ))}
+                    {/* Separator before collab */}
+                    <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>
+                    {/* Collab input cells (input only — no approval UI here) */}
                     {columns.map(col=>{
                       const dk=draftKey(rk,col.id);
                       const existing=values[dk];
@@ -4713,11 +4823,8 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       const isSaving=saving[dk];
                       const cycleClosed=activeCycle?.status==="closed";
                       const canI=!cycleClosed&&canInput(col);
-                      const canR=!cycleClosed&&col.col_type==="workflow"&&canReview(col);
-                      const refVal=null; // display fields are shown as dedicated columns, not inline
                       return(
                         <td key={col.id} style={{padding:"6px 14px",verticalAlign:"top"}}>
-                          {refVal!==null&&refVal!==undefined&&<div style={{fontSize:10,color:T.textMd,marginBottom:2}}>Ref: {refVal}</div>}
                           <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                             {canI?(
                               <input type="number" value={displayVal} placeholder="0"
@@ -4726,9 +4833,8 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                                 disabled={isSaving}
                                 style={{width:90,padding:"4px 8px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,background:draft?.value!==undefined?"#FFFDE7":T.bgCard}}/>
                             ):(
-                              <span style={{fontSize:13,color:T.text,minWidth:60}}>{existing?.value!==undefined&&existing.value!==null?existing.value:"—"}</span>
+                              <span style={{fontSize:13,color:T.text,minWidth:60}}>{existing?.value!==undefined&&existing.value!==null?String(existing.value):"—"}</span>
                             )}
-                            {existing&&statusBadge(existing.status)}
                           </div>
                           {canI&&draft?.value!==undefined&&(
                             <div style={{marginTop:4,display:"flex",gap:4}}>
@@ -4741,21 +4847,42 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                               </button>
                             </div>
                           )}
-                          {col.col_type==="workflow"&&canI&&existing?.status==="pending"&&(
+                        </td>
+                      );
+                    })}
+                    {/* Approval columns — one per workflow col, cleanly separated */}
+                    {wfCols.map(col=>{
+                      const dk=draftKey(rk,col.id);
+                      const existing=values[dk];
+                      const isSaving=saving[dk];
+                      const cycleClosed=activeCycle?.status==="closed";
+                      const canI=!cycleClosed&&canInput(col);
+                      const canR=!cycleClosed&&canReview(col);
+                      return(
+                        <td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
+                          {existing&&<div style={{marginBottom:4}}>{statusBadge(existing.status)}</div>}
+                          {canI&&existing?.value!==undefined&&existing.value!==null&&existing?.status==="pending"&&(
                             <button onClick={()=>submitValue(rk,col)} disabled={isSaving}
-                              style={{marginTop:4,padding:"3px 10px",background:"#185FA5",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
-                              Submit for Review
+                              style={{padding:"3px 10px",background:"#185FA5",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"0 auto"}}>
+                              Submit
                             </button>
                           )}
                           {canR&&existing?.status==="submitted"&&(
                             <button onClick={()=>{setReviewModal({rowKey:rk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");}}
-                              style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
+                              style={{padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"0 auto"}}>
                               Review
                             </button>
                           )}
+                          {!existing&&<span style={{fontSize:11,color:T.textMd}}>—</span>}
                         </td>
                       );
                     })}
+                    {/* Total Approval */}
+                    {columns.some(c=>c.col_type==="workflow")&&(
+                      <td style={{padding:"8px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>
+                        {totalApprovalBadge(wfCols,rk)}
+                      </td>
+                    )}
                     <td style={{padding:"8px 14px",textAlign:"center"}}>
                       <button onClick={()=>openAudit(rk)} title="View audit trail"
                         style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
@@ -4763,24 +4890,29 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </button>
                     </td>
                   </tr>
-                  {/* Drill-down sub-rows for summarized groups */}
+                  {/* Drill-down sub-rows */}
                   {isGroupRow&&isExpanded&&row.__rows.map((subRow,si)=>(
                     <tr key={rk+"_sub_"+si} style={{background:"rgba(200,146,42,0.05)",borderBottom:"1px solid "+T.border}}>
-                      <td style={{padding:"6px 14px 6px 36px",color:T.textMd,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                        {displayFields[0]?String(subRow[displayFields[0]]||"—"):String(si+1)}
-                      </td>
-                      {displayFields.map((rf,rfi)=>(
-                        <td key={rf} style={{padding:"6px 14px",textAlign:"right",color:T.textMd,fontSize:12,
-                          borderLeft:rfi===0?"2px solid "+T.borderDk:"none"}}>
-                          {fmtNum(subRow[rf])}
+                      {viewRows.map((rf,i)=>(
+                        <td key={rf} style={{padding:"6px 14px 6px "+(i===0?36:14)+"px",color:T.textMd,fontSize:12,
+                          overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                          borderLeft:i>0?"1px solid "+T.border:"none"}}>
+                          {String(subRow[rf]||"")}
                         </td>
                       ))}
-                      {displayFields.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
+                      {viewRows.length===0&&<td style={{paddingLeft:36,color:T.textMd,fontSize:12}}>{si+1}</td>}
+                      {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>}
+                      {viewValues.map(({field})=>(
+                        <td key={field} style={{padding:"6px 14px",textAlign:"right",color:T.textMd,fontSize:12}}>
+                          {fmtNum(subRow[field])}
+                        </td>
+                      ))}
+                      <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk}}/>
                       {columns.map(col=>(
-                        <td key={col.id} style={{padding:"6px 14px",fontSize:11,color:T.textMd,fontStyle:"italic"}}>
-                          ↑ grouped
-                        </td>
+                        <td key={col.id} style={{padding:"6px 14px",fontSize:11,color:T.textMd,fontStyle:"italic"}}>↑ grouped</td>
                       ))}
+                      {wfCols.map(col=>(<td key={"appr_"+col.id}/>))}
+                      {columns.some(c=>c.col_type==="workflow")&&<td/>}
                       <td/>
                     </tr>
                   ))}
@@ -4788,7 +4920,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 );
               })}
               {pagedRows.length===0&&(
-                <tr><td colSpan={columns.length+displayFields.length+2} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+                <tr><td colSpan={viewRows.length+viewValues.length+columns.length+columns.filter(c=>c.col_type==="workflow").length+3} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
               )}
             </tbody>
           </table>
@@ -5691,7 +5823,7 @@ function Login({onLogin}) {
     setLoading(true);setErr("");
     try{
       const data=await apiLogin(username.trim(),password);
-      onLogin(data.role,data.username,data.token);
+      onLogin(data.role,data.username,data.token,data.id);
     }catch(e){
       const msg=e.message||"";
       if (isNetworkErr(msg))
@@ -5918,7 +6050,7 @@ export default function App() {
       return;
     }
 
-    setCurrentUser(username);
+    setCurrentUser({username, id: localStorage.getItem("rh_user_id")||null, role: localStorage.getItem("rh_role")});
     // Timeout: if API hangs for >8s, bail to login
     const timeout=setTimeout(clearAndShowLogin,8000);
     loadAllReports()
@@ -6001,11 +6133,12 @@ export default function App() {
   }
 
   // ── Login / Logout ─────────────────────────────────────────────────────────
-  async function doLogin(role,username,token) {
+  async function doLogin(role,username,token,id) {
     localStorage.setItem("rh_role",role);
     localStorage.setItem("rh_username",username);
     localStorage.setItem("rh_token",token);
-    setCurrentUser(username);
+    if(id) localStorage.setItem("rh_user_id",id);
+    setCurrentUser({username, id: id||localStorage.getItem("rh_user_id")||null, role});
     try {
       await loadAllReports();
       // subadmin uses the same AdminView as admin
@@ -6025,6 +6158,7 @@ export default function App() {
     localStorage.removeItem("rh_token");
     localStorage.removeItem("rh_role");
     localStorage.removeItem("rh_username");
+    localStorage.removeItem("rh_user_id");
     setCurrentUser(null);
     setSavedReports([]);
     setPublishedId(null);
