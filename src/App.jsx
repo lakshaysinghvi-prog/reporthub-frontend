@@ -12,7 +12,7 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getRefreshSchedule, setRefreshSchedule,
          getReportFields,
          toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
-         getCollabCycles, openCollabCycle, closeCollabCycle,
+         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle,
          getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
          getCollabAudit, getCollabHistory } from "./api.js";
 
@@ -4060,6 +4060,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [newCycleLabel,setNewCycleLabel]=useState("");
   const [cycleHistViewers,setCycleHistViewers]=useState([]);
   const [openingCycle,setOpeningCycle]=useState(false);
+  const [renamingCycle,setRenamingCycle]=useState(null); // {id, label} being renamed
   const [dataFields,setDataFields]=useState([]);
   const _setupCfg=typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{});
   const [viewRows,setViewRows]=useState(_setupCfg.collab_rows||((_setupCfg.collab_row_key)?[_setupCfg.collab_row_key]:[]));
@@ -4372,22 +4373,50 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
               {/* Cycle list */}
               {cycles.length===0&&<div style={{color:T.textMd,fontSize:13,padding:"8px 0"}}>No cycles yet.</div>}
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                {cycles.map(c=>(
-                  <div key={c.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+                {cycles.map(c=>{
+                  const isRenaming=renamingCycle?.id===c.id;
+                  return(
+                  <div key={c.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                     <div style={{width:10,height:10,borderRadius:"50%",background:statusColor[c.status]||T.textMd,flexShrink:0}}/>
-                    <div style={{flex:1}}>
-                      <span style={{fontWeight:600,fontSize:13,color:T.text}}>{c.period_label}</span>
-                      <span style={{marginLeft:8,fontSize:11,color:statusColor[c.status],fontWeight:600}}>{c.status.toUpperCase()}</span>
-                      {c.closed_at&&<span style={{marginLeft:8,fontSize:11,color:T.textMd}}>Closed {new Date(c.closed_at).toLocaleDateString()}</span>}
+                    <div style={{flex:1,minWidth:160}}>
+                      {isRenaming?(
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <input value={renamingCycle.label} autoFocus
+                            onChange={e=>setRenamingCycle(r=>({...r,label:e.target.value}))}
+                            onKeyDown={async e=>{
+                              if(e.key==="Enter"){
+                                try{const updated=await renameCollabCycle(report.id,c.id,renamingCycle.label);setCycles(prev=>prev.map(x=>x.id===updated.id?updated:x));setRenamingCycle(null);}catch(err){setMsg("Error: "+err.message);}
+                              } else if(e.key==="Escape") setRenamingCycle(null);
+                            }}
+                            style={{padding:"4px 8px",border:"1px solid "+T.accent,borderRadius:5,fontSize:13,fontWeight:600,color:T.text,background:T.bgCard,outline:"none",flex:1}}/>
+                          <button onClick={async()=>{
+                            try{const updated=await renameCollabCycle(report.id,c.id,renamingCycle.label);setCycles(prev=>prev.map(x=>x.id===updated.id?updated:x));setRenamingCycle(null);}catch(err){setMsg("Error: "+err.message);}
+                          }} style={{padding:"4px 10px",background:T.accent,color:T.textLt,border:"none",borderRadius:5,cursor:"pointer",fontSize:12,fontWeight:600}}>Save</button>
+                          <button onClick={()=>setRenamingCycle(null)} style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:12}}>Cancel</button>
+                        </div>
+                      ):(
+                        <>
+                          <span style={{fontWeight:600,fontSize:13,color:T.text}}>{c.period_label}</span>
+                          <span style={{marginLeft:8,fontSize:11,color:statusColor[c.status],fontWeight:600}}>{c.status.toUpperCase()}</span>
+                          {c.closed_at&&<span style={{marginLeft:8,fontSize:11,color:T.textMd}}>Closed {new Date(c.closed_at).toLocaleDateString()}</span>}
+                        </>
+                      )}
                     </div>
-                    {c.status==="open"&&(
+                    {!isRenaming&&(
+                      <button onClick={()=>setRenamingCycle({id:c.id,label:c.period_label})}
+                        style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:11,color:T.textMd}}>
+                        ✏ Rename
+                      </button>
+                    )}
+                    {c.status==="open"&&!isRenaming&&(
                       <button onClick={()=>closeCycle(c.id)} disabled={saving}
                         style={{padding:"5px 12px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
                         Close Cycle
                       </button>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -4463,11 +4492,17 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const _ac=freshConfig||(typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{}));
   const viewRows=_ac.collab_rows||((_ac.collab_row_key)?[_ac.collab_row_key]:[]);
   const viewValues=_ac.collab_values||(Array.isArray(_ac.collab_display_fields)?_ac.collab_display_fields:[]).map(f=>({field:f,agg:"sum"}));
-  const viewCols=_ac.collab_cols||[]; // C zone — text reference columns
+  const viewCols=_ac.collab_cols||[]; // C zone — cross-tab column field (first one used)
+  const cField=viewCols[0]||null;    // primary C field for cross-tab
   const viewFilters=_ac.collab_filters||[];
   const rowKey=viewRows[0]||null; // primary display field
   const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
   const numFieldsForFilter=useMemo(()=>new Set(viewValues.map(v=>v.field)),[viewValues]);
+  // Unique C field values for cross-tab column headers
+  const cVals=useMemo(()=>{
+    if(!cField)return[];
+    return [...new Set(dataRows.map(r=>String(r[cField]||"")))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  },[cField,dataRows]);
 
   useEffect(()=>{loadAll();},[report.id]);
 
@@ -4648,14 +4683,23 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const groups={};const order=[];
     filteredRows.forEach((row,ri)=>{
       const k=computeRK(row,ri);
-      if(!groups[k]){groups[k]={...row,__rk:k,__rows:[row],__count:1};order.push(k);}
+      if(!groups[k]){groups[k]={...row,__rk:k,__rows:[row],__count:1,__cGroups:{}};order.push(k);}
       else{groups[k].__rows.push(row);groups[k].__count++;}
     });
-    // Aggregate value fields using doAgg
+    // Aggregate total V values + per-C-value breakdown
     order.forEach(k=>{
       viewValues.forEach(({field,agg})=>{
         groups[k][field]=doAgg(groups[k].__rows,field,agg);
       });
+      if(cField){
+        cVals.forEach(cv=>{
+          const cRows=groups[k].__rows.filter(r=>String(r[cField]||"")===cv);
+          groups[k].__cGroups[cv]={};
+          viewValues.forEach(({field,agg})=>{
+            groups[k].__cGroups[cv][field]=cRows.length>0?doAgg(cRows,field,agg):null;
+          });
+        });
+      }
     });
     displayRows=order.map(k=>groups[k]);
   }
@@ -4811,28 +4855,60 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>ref</div>
                   </th>
                 ))}
-                {/* Separator */}
+                {/* Separator before values */}
                 {viewValues.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
-                {/* Value reference columns — with DrillColFilter */}
-                {viewValues.map(({field,agg})=>(
-                  <th key={field}
-                    style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
-                      borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",position:"relative"}}>
-                    <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
-                      <DrillColFilter field={field} data={dataRows}
-                        active={colFilters[field]}
-                        onChange={v=>{ setColFilters(p=>({...p,[field]:v})); setPage(0); }}
-                        numFields={numFieldsForFilter}
-                        activeSort={colSorts[field]}
-                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
-                      <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>
-                        {field}
-                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
-                      </span>
-                    </div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
-                  </th>
-                ))}
+                {cField?(
+                  /* ── C zone: cross-tab column headers ── */
+                  <>
+                    {cVals.map(cv=>(
+                      viewValues.map(({field,agg},vi)=>(
+                        <th key={cv+"_"+field}
+                          style={{padding:"8px 10px",textAlign:"right",fontWeight:600,color:T.text,
+                            borderBottom:"2px solid "+T.border,minWidth:100,userSelect:"none",
+                            borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)"}}>
+                          <div style={{fontSize:10,color:T.tagC,fontWeight:700,marginBottom:2,textAlign:"center"}}>{cv}</div>
+                          <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:2}}>
+                            <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",fontSize:12}}>{field}</span>
+                          </div>
+                          <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                        </th>
+                      ))
+                    ))}
+                    {/* Total columns */}
+                    {viewValues.map(({field,agg},vi)=>(
+                      <th key={"tot_"+field}
+                        style={{padding:"8px 10px",textAlign:"right",fontWeight:700,color:T.text,
+                          borderBottom:"2px solid "+T.border,minWidth:100,
+                          borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",
+                          background:"rgba(92,45,26,0.04)"}}>
+                        <div style={{fontSize:10,color:T.textMd,fontWeight:700,marginBottom:2,textAlign:"center"}}>Total</div>
+                        <div style={{textAlign:"right"}}>{field}</div>
+                        <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                      </th>
+                    ))}
+                  </>
+                ):(
+                  /* ── No C zone: plain value columns ── */
+                  viewValues.map(({field,agg})=>(
+                    <th key={field}
+                      style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                        borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",position:"relative"}}>
+                      <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
+                        <DrillColFilter field={field} data={dataRows}
+                          active={colFilters[field]}
+                          onChange={v=>{ setColFilters(p=>({...p,[field]:v})); setPage(0); }}
+                          numFields={numFieldsForFilter}
+                          activeSort={colSorts[field]}
+                          onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                        <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>
+                          {field}
+                          <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                        </span>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                    </th>
+                  ))
+                )}
                 {/* Separator before collab */}
                 <th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>
                 {/* Collab input columns — with DrillColFilter on collab values */}
@@ -4926,13 +5002,40 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     ))}
                     {/* Separator */}
                     {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>}
-                    {/* Value reference cells */}
-                    {viewValues.map(({field},i)=>(
-                      <td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
-                        background:rowBg,whiteSpace:"nowrap",opacity:0.9}}>
-                        {fmtNum(row[field])}
-                      </td>
-                    ))}
+                    {/* Value cells — cross-tab or flat */}
+                    {cField?(
+                      <>
+                        {cVals.map(cv=>(
+                          viewValues.map(({field},vi)=>{
+                            const cv_val=row.__cGroups?.[cv]?.[field];
+                            return(
+                              <td key={cv+"_"+field} style={{padding:"7px 10px",textAlign:"right",
+                                color:cv_val!==null&&cv_val!==undefined?T.numColor:T.textMd,
+                                fontWeight:500,whiteSpace:"nowrap",background:rowBg,
+                                borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)"}}>
+                                {cv_val!==null&&cv_val!==undefined?fmtNum(cv_val):"—"}
+                              </td>
+                            );
+                          })
+                        ))}
+                        {/* Total cells */}
+                        {viewValues.map(({field},vi)=>(
+                          <td key={"tot_"+field} style={{padding:"7px 10px",textAlign:"right",
+                            color:T.numColor,fontWeight:700,whiteSpace:"nowrap",
+                            borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",
+                            background:"rgba(92,45,26,0.04)"}}>
+                            {fmtNum(row[field])}
+                          </td>
+                        ))}
+                      </>
+                    ):(
+                      viewValues.map(({field})=>(
+                        <td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
+                          background:rowBg,whiteSpace:"nowrap",opacity:0.9}}>
+                          {fmtNum(row[field])}
+                        </td>
+                      ))
+                    )}
                     {/* Separator before collab */}
                     <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>
                     {/* Collab input cells (input only — no approval UI here) */}

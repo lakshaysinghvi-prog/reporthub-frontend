@@ -181,6 +181,9 @@ export const openCollabCycle = (id, periodLabel, historyViewerIds) =>
 export const closeCollabCycle = (id, cycleId) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/close`, { method: 'PATCH' });
 
+export const renameCollabCycle = (id, cycleId, label) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/rename`, { method: 'PATCH', body: JSON.stringify({ label }) });
+
 export const getCollabValues = (id, cycleId) => api(`/api/reports/${id}/collab-cycles/${cycleId}/values`);
 export const upsertCollabValue = (id, cycleId, payload) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/values`, { method: 'PUT', body: JSON.stringify(payload) });
