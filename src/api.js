@@ -184,6 +184,12 @@ export const closeCollabCycle = (id, cycleId) =>
 export const renameCollabCycle = (id, cycleId, label) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/rename`, { method: 'PATCH', body: JSON.stringify({ label }) });
 
+export const deleteCollabCycle = (id, cycleId) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}`, { method: 'DELETE' });
+
+export const exportCollabCycle = (id, cycleId) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/export`);
+
 export const getCollabValues = (id, cycleId) => api(`/api/reports/${id}/collab-cycles/${cycleId}/values`);
 export const upsertCollabValue = (id, cycleId, payload) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/values`, { method: 'PUT', body: JSON.stringify(payload) });

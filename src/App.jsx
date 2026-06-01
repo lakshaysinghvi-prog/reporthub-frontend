@@ -12,7 +12,8 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getRefreshSchedule, setRefreshSchedule,
          getReportFields,
          toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
-         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle,
+         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle, deleteCollabCycle,
+         exportCollabCycle,
          getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
          getCollabAudit, getCollabHistory } from "./api.js";
 
@@ -4085,6 +4086,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [cycleHistViewers,setCycleHistViewers]=useState([]);
   const [openingCycle,setOpeningCycle]=useState(false);
   const [renamingCycle,setRenamingCycle]=useState(null); // {id, label} being renamed
+  const [deletingCycle,setDeletingCycle]=useState(null); // cycleId being deleted
   const [colDragIdx,setColDragIdx]=useState(null);       // drag-and-drop index for collab columns
   const [dataFields,setDataFields]=useState([]);
   const _setupCfg=typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{});
@@ -4094,8 +4096,8 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
   const [viewFilters,setViewFilters]=useState(_setupCfg.collab_filters||[]);
   const [savingView,setSavingView]=useState(false);
 
-  // ColForm state — no ref_column (display fields handle context columns)
-  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[]};
+  // ColForm state
+  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[],validation_config:null};
   const [colForm,setColForm]=useState(blankForm);
 
   useEffect(()=>{
@@ -4209,6 +4211,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
       label:col.label,col_type:col.col_type,
       inputter_ids:Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]'),
       reviewer_ids:Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]'),
+      validation_config:col.validation_config||(col.validation_config===null?null:null),
     });
   };
 
@@ -4343,6 +4346,49 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                         allUsers={allUsers} onChange={v=>setColForm(f=>({...f,reviewer_ids:v}))}/>
                     </div>
                   )}
+                  {/* ── Validation Rule ── */}
+                  <div style={{marginTop:14,padding:"12px 14px",background:T.bgAlt,borderRadius:8,border:"1px solid "+T.border}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.textMd,marginBottom:8}}>🔒 Input Validation (optional)</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"end"}}>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Reference Field (from report data)</label>
+                        <select value={colForm.validation_config?.field||""}
+                          onChange={e=>setColForm(f=>({...f,validation_config:e.target.value?{...f.validation_config,field:e.target.value}:null}))}
+                          style={{width:"100%",padding:"6px 9px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,marginTop:3}}>
+                          <option value="">— No validation —</option>
+                          {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Rule</label>
+                        <select value={colForm.validation_config?.rule||"lte"}
+                          onChange={e=>setColForm(f=>({...f,validation_config:f.validation_config?{...f.validation_config,rule:e.target.value}:null}))}
+                          disabled={!colForm.validation_config?.field}
+                          style={{width:"100%",padding:"6px 9px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,marginTop:3}}>
+                          <option value="lte">≤ Cannot exceed (max)</option>
+                          <option value="gte">≥ Cannot be less than (min)</option>
+                          <option value="pct">% Percentage of field</option>
+                        </select>
+                      </div>
+                    </div>
+                    {colForm.validation_config?.field&&colForm.validation_config?.rule==="pct"&&(
+                      <div style={{marginTop:8}}>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Max % allowed</label>
+                        <input type="number" value={colForm.validation_config?.pct_max||100}
+                          onChange={e=>setColForm(f=>({...f,validation_config:{...f.validation_config,pct_max:parseFloat(e.target.value)||100}}))}
+                          style={{padding:"5px 8px",border:"1px solid "+T.border,borderRadius:5,fontSize:12,width:80,marginLeft:8}}/>
+                        <span style={{fontSize:11,color:T.textMd,marginLeft:4}}>% of the reference field value</span>
+                      </div>
+                    )}
+                    {colForm.validation_config?.field&&(
+                      <div style={{fontSize:11,color:T.primary,marginTop:6}}>
+                        Preview: Input value must be
+                        {colForm.validation_config.rule==="lte"&&<strong> ≤ {colForm.validation_config.field}</strong>}
+                        {colForm.validation_config.rule==="gte"&&<strong> ≥ {colForm.validation_config.field}</strong>}
+                        {colForm.validation_config.rule==="pct"&&<strong> ≤ {colForm.validation_config.pct_max||100}% of {colForm.validation_config.field}</strong>}
+                      </div>
+                    )}
+                  </div>
                   <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
                     <button onClick={()=>{setEditingCol(null);setColForm(blankForm);}}
                       style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>Cancel</button>
@@ -4457,6 +4503,19 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                       <button onClick={()=>closeCycle(c.id)} disabled={saving}
                         style={{padding:"5px 12px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
                         Close Cycle
+                      </button>
+                    )}
+                    {/* Super Admin only: delete a closed cycle */}
+                    {currentRole==="admin"&&c.status==="closed"&&!isRenaming&&(
+                      <button onClick={async()=>{
+                        if(!window.confirm(`Delete cycle "${c.period_label}"? All entered values will be permanently lost.`))return;
+                        setDeletingCycle(c.id);
+                        try{await deleteCollabCycle(report.id,c.id);setCycles(prev=>prev.filter(x=>x.id!==c.id));setMsg("✓ Cycle deleted");}
+                        catch(e){setMsg("Error: "+e.message);}
+                        setDeletingCycle(null);
+                      }} disabled={deletingCycle===c.id}
+                        style={{padding:"5px 12px",background:"none",border:"1px solid #A32D2D",color:"#A32D2D",borderRadius:7,cursor:"pointer",fontSize:12,opacity:deletingCycle===c.id?0.5:1}}>
+                        🗑 Delete
                       </button>
                     )}
                   </div>
@@ -4635,11 +4694,30 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     return ids.includes(myId);
   };
 
+  // Validate input value against the column's validation_config
+  const validateInput=(rk,col,val)=>{
+    const vc=col.validation_config;
+    if(!vc||!vc.field||!vc.rule)return null;
+    // Find the reference value from the current row
+    const row=dataRows.find(r=>viewRows.map(f=>String(r[f]||"")).join("||")===rk||String(r[viewRows[0]]||"")===rk);
+    if(!row)return null;
+    const refVal=parseFloat(row[vc.field])||0;
+    const inputVal=parseFloat(val)||0;
+    if(vc.rule==="lte"&&inputVal>refVal)
+      return `${col.label}: value (${inputVal.toLocaleString()}) cannot exceed ${vc.field} (${refVal.toLocaleString()})`;
+    if(vc.rule==="gte"&&inputVal<refVal)
+      return `${col.label}: value (${inputVal.toLocaleString()}) cannot be less than ${vc.field} (${refVal.toLocaleString()})`;
+    if(vc.rule==="pct"){const max=(vc.pct_max||100)/100*refVal;if(inputVal>max)return `${col.label}: value exceeds ${vc.pct_max||100}% of ${vc.field} (max: ${max.toLocaleString()})`;}
+    return null;
+  };
+
   const saveDraft=async(rk,col)=>{
     const dk=draftKey(rk,col.id);
     const draft=draftMap[dk]||{};
     const val=draft.value!==undefined?draft.value:null;
     if(val===null||val==="")return;
+    const validationErr=validateInput(rk,col,val);
+    if(validationErr){setMsg("⚠ "+validationErr);setTimeout(()=>setMsg(""),4000);return;}
     setSaving(s=>({...s,[dk]:true}));
     try{
       const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
@@ -4832,6 +4910,53 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
   const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
 
+  // ── Excel download for workflow view ──
+  const downloadWorkflowExcel=async()=>{
+    if(!activeCycle)return;
+    try{
+      setMsg("Preparing download…");
+      const exp=await exportCollabCycle(report.id,activeCycle.id);
+      const {columns:cols,values:vals,dataRows:dRows}=exp;
+      // Build value map
+      const valMap={};vals.forEach(v=>{valMap[v.row_key+"__"+v.col_id]=v;});
+      // Build header row
+      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...cols.filter(c=>c.col_type==="workflow").map(c=>"Approval — "+c.label),"Total Approval"];
+      // Build data rows — one per unique row key
+      const rkMap={};
+      dRows.forEach(row=>{
+        const rk=viewRows.map(f=>String(row[f]||"")).join("||");
+        if(!rkMap[rk])rkMap[rk]={row,rk};
+      });
+      const sheetRows=[header,...Object.values(rkMap).map(({row,rk})=>{
+        const wfCols=cols.filter(c=>c.col_type==="workflow");
+        const approvedSum=wfCols.reduce((s,col)=>{
+          const v=valMap[rk+"__"+col.id];
+          return s+(['approved','modified'].includes(v?.status)?parseFloat(v.value)||0:0);
+        },0);
+        return[
+          ...viewRows.map(f=>row[f]||""),
+          ...viewValues.map(({field})=>row[field]||0),
+          ...cols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.value??"";}),
+          ...wfCols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.status||"";}),
+          approvedSum||"",
+        ];
+      })];
+      // Use XLSX if available
+      if(window.XLSX){
+        const ws=window.XLSX.utils.aoa_to_sheet(sheetRows);
+        const wb=window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb,ws,"Workflow");
+        window.XLSX.writeFile(wb,`${report.name}_${activeCycle.period_label}_workflow.xlsx`);
+      } else {
+        // Fallback CSV
+        const csv=sheetRows.map(r=>r.map(c=>String(c).includes(",")?`"${c}"`:c).join(",")).join("\n");
+        const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);
+        a.download=`${report.name}_${activeCycle.period_label}_workflow.csv`;a.click();
+      }
+      setMsg("✓ Downloaded");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+  };
+
   // ── Review modal derived values — computed at component scope so they're always reactive ──
   const reviewOrigVal=reviewModal?parseFloat(String(reviewModal.currentVal||"0"))||0:0;
   const reviewCurVal=parseFloat(reviewValue||"0")||0;
@@ -4865,6 +4990,12 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               style={{padding:"5px 10px",borderRadius:6,border:"none",fontSize:12,background:"rgba(255,255,255,0.15)",color:T.textLt}}>
               {allCycles.map(c=><option key={c.id} value={c.id} style={{background:T.bgHeader}}>{cycleLabel(c)}</option>)}
             </select>
+          )}
+          {activeCycle&&(
+            <button onClick={downloadWorkflowExcel}
+              style={{padding:"5px 12px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              ⬇ Excel
+            </button>
           )}
           <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer"}}>✕</button>
         </div>
