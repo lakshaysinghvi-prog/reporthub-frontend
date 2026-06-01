@@ -4415,6 +4415,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [page,setPage]=useState(0);
   const PAGE_SIZE=100;
   const [colFilters,setColFilters]=useState({}); // {field: string[]|undefined}
+  const [colSorts,setColSorts]=useState({});     // {field: 'az'|'za'|'09'|'90'}
   const [drillDown,setDrillDown]=useState(null); // {rk, rows, label} — drill-down modal
   // Fresh config from API (overrides stale prop after Save View Config)
   const [freshConfig,setFreshConfig]=useState(null);
@@ -4430,6 +4431,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const viewFilters=_ac.collab_filters||[];
   const rowKey=viewRows[0]||null; // primary display field
   const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
+  const numFieldsForFilter=useMemo(()=>new Set(viewValues.map(v=>v.field)),[viewValues]);
 
   useEffect(()=>{loadAll();},[report.id]);
 
@@ -4480,6 +4482,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const canInput=(col)=>{
     if(isBuilder)return true;
     const ids=Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]');
+    if(ids.length===0)return true; // no restriction — all authenticated users can input
     return ids.includes(myId);
   };
   const canReview=(col)=>{
@@ -4717,16 +4720,24 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
-                {/* Row label columns */}
+                {/* Row label columns — with DrillColFilter (search, select-all, sort) */}
                 {viewRows.map((rf,i)=>(
-                  <th key={rf} onClick={()=>toggleSort(rf)}
+                  <th key={rf}
                     style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,
-                      borderBottom:"2px solid "+T.border,minWidth:180,cursor:"pointer",userSelect:"none",
+                      borderBottom:"2px solid "+T.border,minWidth:180,userSelect:"none",position:"relative",
                       borderLeft:i>0?"1px solid "+T.border:"none"}}>
-                    <span style={{display:"flex",alignItems:"center",gap:4}}>
-                      {rf}
-                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
-                    </span>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span onClick={()=>toggleSort(rf)} style={{cursor:"pointer",flex:1,display:"flex",alignItems:"center",gap:3}}>
+                        {rf}
+                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                      </span>
+                      <DrillColFilter field={rf} data={dataRows}
+                        active={colFilters[rf]}
+                        onChange={v=>{ setColFilters(p=>({...p,[rf]:v})); setPage(0); }}
+                        numFields={numFieldsForFilter}
+                        activeSort={colSorts[rf]}
+                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                    </div>
                   </th>
                 ))}
                 {viewRows.length===0&&(
@@ -4736,15 +4747,23 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 )}
                 {/* Separator */}
                 {viewValues.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
-                {/* Value reference columns */}
-                {viewValues.map(({field,agg},i)=>(
-                  <th key={field} onClick={()=>toggleSort(field)}
+                {/* Value reference columns — with DrillColFilter */}
+                {viewValues.map(({field,agg})=>(
+                  <th key={field}
                     style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
-                      borderBottom:"2px solid "+T.border,minWidth:120,cursor:"pointer",userSelect:"none"}}>
-                    <span style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
-                      {field}
-                      <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
-                    </span>
+                      borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",position:"relative"}}>
+                    <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
+                      <DrillColFilter field={field} data={dataRows}
+                        active={colFilters[field]}
+                        onChange={v=>{ setColFilters(p=>({...p,[field]:v})); setPage(0); }}
+                        numFields={numFieldsForFilter}
+                        activeSort={colSorts[field]}
+                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                      <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>
+                        {field}
+                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                      </span>
+                    </div>
                     <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
                   </th>
                 ))}
@@ -4754,7 +4773,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 {columns.map(col=>(
                   <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:150}}>
                     <div>{col.label}</div>
-                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Input":"Input Only"}</div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Workflow":"Input Only"}</div>
                   </th>
                 ))}
                 {/* Auto-paired approval columns (one per workflow col) */}
