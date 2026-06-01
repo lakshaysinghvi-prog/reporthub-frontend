@@ -4513,6 +4513,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [auditData,setAuditData]=useState([]);
   const [reviewModal,setReviewModal]=useState(null);
   const [reviewRemarks,setReviewRemarks]=useState("");
+  const [reviewValue,setReviewValue]=useState(""); // approver's editable value
   const [msg,setMsg]=useState("");
   const [histMode,setHistMode]=useState(false);
   // Filter/sort/display state
@@ -4665,9 +4666,11 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const dk=draftKey(rk,col_id);
     setSaving(s=>({...s,[dk]:true}));
     try{
-      const saved=await reviewCollabValue(report.id,activeCycle.id,rk,col_id,action,reviewRemarks);
+      // Pass modified_value only when action is 'modified'
+      const modVal=action==="modified"?parseFloat(reviewValue)||0:undefined;
+      const saved=await reviewCollabValue(report.id,activeCycle.id,rk,col_id,action,reviewRemarks||null,modVal);
       setValues(v=>({...v,[dk]:saved}));
-      setReviewModal(null);setReviewRemarks("");
+      setReviewModal(null);setReviewRemarks("");setReviewValue("");
       setMsg("✓ "+action.charAt(0).toUpperCase()+action.slice(1));setTimeout(()=>setMsg(""),2000);
     }catch(e){setMsg("Error: "+e.message);}
     setSaving(s=>({...s,[dk]:false}));
@@ -4682,9 +4685,14 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   };
 
   const statusBadge=(status)=>{
-    const map={pending:{bg:"#FFF3CD",color:"#856404"},submitted:{bg:"#CCE5FF",color:"#004085"},
-      approved:{bg:"#D4EDDA",color:"#155724"},rejected:{bg:"#F8D7DA",color:"#721C24"},
-      hold:{bg:"#E2D9F3",color:"#4A2080"}};
+    const map={
+      pending:  {bg:"#FFF3CD",color:"#856404"},
+      submitted:{bg:"#CCE5FF",color:"#004085"},
+      approved: {bg:"#D4EDDA",color:"#155724"},
+      rejected: {bg:"#F8D7DA",color:"#721C24"},
+      hold:     {bg:"#E2D9F3",color:"#4A2080"},
+      modified: {bg:"#FFE5B4",color:"#7A3E00"}, // amber — reviewer changed the value
+    };
     const s=map[status]||{bg:T.bgAlt,color:T.textMd};
     return<span style={{fontSize:10,fontWeight:700,background:s.bg,color:s.color,padding:"2px 6px",borderRadius:8,textTransform:"uppercase"}}>{status||"—"}</span>;
   };
@@ -5128,13 +5136,18 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                   return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"middle"}}>
                     {canI?(
                       <div style={{position:"relative",display:"inline-block"}}>
-                        <input type="number" value={displayVal} placeholder="0"
+                        <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
                           onChange={e=>{
-                            const val=e.target.value;
+                            const val=e.target.value.replace(/[^0-9.\-]/g,""); // allow digits, dot, minus only
                             setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
-                            // Auto-save after 800ms of no typing
+                            // Auto-save 800ms after last keystroke
                             if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
                             autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
+                          }}
+                          onBlur={()=>{
+                            // On Tab/blur: cancel timer and save immediately
+                            if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
+                            saveDraft(cellRk,col);
                           }}
                           disabled={isSav}
                           style={{width:110,padding:"5px 9px",border:"1px solid "+(isDirty?"#C8922A":T.border),borderRadius:6,fontSize:13,
@@ -5156,7 +5169,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                   return<td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
                     {existing?statusBadge(existing.status):<span style={{fontSize:11,color:T.textMd}}>—</span>}
                     {canR&&existing?.status==="submitted"&&(
-                      <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");}}
+                      <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");setReviewValue(String(existing.value??""));}}
                         style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"4px auto 0"}}>
                         Review
                       </button>
@@ -5325,25 +5338,95 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
         />
       )}
 
-      {/* Review Modal */}
-      {reviewModal&&(
-        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(400px,90vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
-            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:4}}>Review: {reviewModal.colLabel}</div>
-            <div style={{fontSize:13,color:T.textMd,marginBottom:12}}>Value: <strong>{reviewModal.currentVal}</strong></div>
-            <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Remarks (optional)</label>
-            <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
-              rows={3} placeholder="Add remarks for inputter..."
-              style={{width:"100%",padding:"8px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:13,marginTop:4,boxSizing:"border-box",resize:"vertical"}}/>
-            <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end",flexWrap:"wrap"}}>
-              <button onClick={()=>setReviewModal(null)} style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>Cancel</button>
-              <button onClick={()=>doReview("hold")} style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>Hold</button>
-              <button onClick={()=>doReview("rejected")} style={{padding:"7px 14px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>Reject</button>
-              <button onClick={()=>doReview("approved")} style={{padding:"7px 14px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:700}}>Approve</button>
+      {/* Review Modal — approver can modify value; action determined by value change */}
+      {reviewModal&&(()=>{
+        const origVal=parseFloat(reviewModal.currentVal)||0;
+        const curVal=parseFloat(reviewValue)||0;
+        const isChanged=curVal!==origVal;
+        const isZero=curVal===0;
+        // Determine which actions are appropriate
+        const canApprove=!isChanged; // approve only if value unchanged
+        const canModify=isChanged&&!isZero; // modified = changed to non-zero
+        // isZero with change → only Reject makes sense (highlighted)
+        return(
+          <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(440px,92vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+              <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:14}}>Review: {reviewModal.colLabel}</div>
+
+              {/* Editable value */}
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>
+                  Submitted Value — you can modify below:
+                </label>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <input type="text" inputMode="numeric" value={reviewValue}
+                    onChange={e=>setReviewValue(e.target.value.replace(/[^0-9.\-]/g,""))}
+                    style={{flex:1,padding:"8px 12px",border:"2px solid "+(isChanged?"#C8922A":T.border),
+                      borderRadius:7,fontSize:15,fontWeight:600,color:T.text,
+                      background:isChanged?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                  {isChanged&&(
+                    <span style={{fontSize:11,color:"#7A3E00",fontWeight:600,whiteSpace:"nowrap"}}>
+                      {isZero?"→ Reject":"Was: "+reviewModal.currentVal}
+                    </span>
+                  )}
+                </div>
+                {isChanged&&!isZero&&(
+                  <div style={{fontSize:11,color:"#7A3E00",marginTop:4}}>
+                    ✏ Value changed — action will be recorded as <strong>MODIFIED</strong>
+                  </div>
+                )}
+                {isZero&&isChanged&&(
+                  <div style={{fontSize:11,color:"#721C24",marginTop:4}}>
+                    ⚠ Value is 0 — action will be recorded as <strong>REJECTED</strong>
+                  </div>
+                )}
+              </div>
+
+              {/* Reviewer remarks */}
+              <div style={{marginBottom:16}}>
+                <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>Remarks (optional)</label>
+                <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
+                  rows={2} placeholder="Add remarks for inputter..."
+                  style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,boxSizing:"border-box",resize:"vertical"}}/>
+              </div>
+
+              {/* Action buttons — 4 tags */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
+                <button onClick={()=>{setReviewModal(null);setReviewRemarks("");setReviewValue("");}}
+                  style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>
+                  Cancel
+                </button>
+                {/* Hold — always available */}
+                <button onClick={()=>doReview("hold")}
+                  style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                  ⏸ Hold
+                </button>
+                {/* Reject — always available; auto-highlighted when value=0 */}
+                <button onClick={()=>doReview("rejected")}
+                  style={{padding:"7px 14px",background:isZero?"#721C24":"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                    boxShadow:isZero?"0 0 0 3px rgba(163,45,45,0.4)":"none"}}>
+                  ❌ Reject
+                </button>
+                {/* Modified — only when value changed to non-zero */}
+                {canModify&&(
+                  <button onClick={()=>doReview("modified")}
+                    style={{padding:"7px 14px",background:"#8B4400",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                      boxShadow:"0 0 0 3px rgba(139,68,0,0.35)"}}>
+                    ✏ Modified
+                  </button>
+                )}
+                {/* Approve — only when value unchanged */}
+                <button onClick={()=>doReview("approved")} disabled={!canApprove}
+                  style={{padding:"7px 14px",background:canApprove?"#2D6A4F":"#ccc",color:"#fff",border:"none",borderRadius:7,
+                    cursor:canApprove?"pointer":"not-allowed",fontSize:12,fontWeight:700,
+                    opacity:canApprove?1:0.5}}>
+                  ✅ Approve
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Audit Trail Panel */}
       {auditRow&&(

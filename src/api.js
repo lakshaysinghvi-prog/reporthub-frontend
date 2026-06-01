@@ -189,8 +189,8 @@ export const upsertCollabValue = (id, cycleId, payload) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/values`, { method: 'PUT', body: JSON.stringify(payload) });
 export const submitCollabValue = (id, cycleId, row_key, col_id) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/values/submit`, { method: 'PATCH', body: JSON.stringify({ row_key, col_id }) });
-export const reviewCollabValue = (id, cycleId, row_key, col_id, action, remarks) =>
-  api(`/api/reports/${id}/collab-cycles/${cycleId}/values/review`, { method: 'PATCH', body: JSON.stringify({ row_key, col_id, action, remarks }) });
+export const reviewCollabValue = (id, cycleId, row_key, col_id, action, remarks, modified_value) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/values/review`, { method: 'PATCH', body: JSON.stringify({ row_key, col_id, action, remarks, modified_value }) });
 
 export const getCollabAudit = (id, cycleId, row_key) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/audit${row_key ? '?row_key=' + encodeURIComponent(row_key) : ''}`);
