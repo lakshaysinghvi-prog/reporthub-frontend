@@ -5104,22 +5104,24 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                   </td>;
                 });
 
+                // Drill-down helper for a specific row grouping
+                const openDrill=(drillRfs,drillRowKey,label)=>setDrillDown({rowKey:drillRowKey,colVal:null,rFs:drillRfs,cF:null,metricLabel:label});
+                const vCellStyle=(bg,vi,extra)=>({padding:"8px 12px",textAlign:"right",color:T.numColor,fontWeight:500,
+                  background:bg,whiteSpace:"nowrap",cursor:"pointer",userSelect:"none",
+                  borderLeft:vi===0?"none":"none",...extra});
                 return(
                   <React.Fragment key={rk}>
-                  {/* ── Main summary row ── */}
-                  <tr style={{background:isL1?T.bgStat:rowBg,borderBottom:"1px solid "+T.border,
-                    cursor:isL1?"default":"pointer"}}
-                    onClick={isL1?undefined:()=>setDrillDown({rowKey:viewRows.map(f=>String(row[f]||"")),colVal:null,rFs:viewRows,cF:null,metricLabel:"Workflow View — "+rk})}>
-                    {/* Row label cells */}
+                  {/* ── Main summary row (level-1 or single-level) ── */}
+                  <tr style={{background:isL1?T.bgStat:rowBg,borderBottom:"1px solid "+T.border}}>
+                    {/* Row label cells — NOT clickable */}
                     {viewRows.map((rf,i)=>(
                       <td key={rf} style={{padding:"8px 14px",fontWeight:600,color:T.text,
                         maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
                         borderLeft:i>0?"1px solid "+T.border:"none"}}
                         title={String(row[rf]||"")}>
                         {i===0&&isL1?(
-                          /* Level-1: expand/collapse only — no drill-down "+" */
                           <span style={{display:"flex",alignItems:"center",gap:6}}>
-                            <button onClick={e=>{e.stopPropagation();setExpanded(s=>{const n=new Set(s);n.has(rk)?n.delete(rk):n.add(rk);return n;})}}
+                            <button onClick={()=>setExpanded(s=>{const n=new Set(s);n.has(rk)?n.delete(rk):n.add(rk);return n;})}
                               title={isL1Expanded?"Collapse":"Expand"}
                               style={{background:isL1Expanded?T.primary:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
                                 fontSize:11,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
@@ -5133,102 +5135,100 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </td>
                     ))}
                     {viewRows.length===0&&<td style={{padding:"8px 14px",color:T.textMd}}>{page*PAGE_SIZE+ri+1}</td>}
-                    {/* C zone — text reference cells */}
+                    {/* C zone cells */}
                     {viewCols.map(cf=>(
                       <td key={cf} style={{padding:"8px 14px",color:T.text,borderLeft:"1px solid "+T.border,
                         maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
-                        title={String(row[cf]||"")}>
-                        {String(row[cf]||"—")}
-                      </td>
+                        title={String(row[cf]||"")}>{String(row[cf]||"—")}</td>
                     ))}
                     {/* Separator */}
-                    {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:rowBg}}/>}
-                    {/* Value cells — cross-tab or flat */}
+                    {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:isL1?T.bgStat:rowBg}}/>}
+                    {/* Value cells — CLICKABLE → drill-down into raw records */}
                     {cField?(
                       <>
-                        {cVals.map(cv=>(
-                          viewValues.map(({field},vi)=>{
-                            const cv_val=row.__cGroups?.[cv]?.[field];
-                            return(
-                              <td key={cv+"_"+field} style={{padding:"7px 10px",textAlign:"right",
-                                color:cv_val!==null&&cv_val!==undefined?T.numColor:T.textMd,
-                                fontWeight:500,whiteSpace:"nowrap",background:rowBg,
-                                borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)"}}>
-                                {cv_val!==null&&cv_val!==undefined?fmtNum(cv_val):"—"}
-                              </td>
-                            );
-                          })
-                        ))}
-                        {/* Total cells */}
-                        {viewValues.map(({field},vi)=>(
-                          <td key={"tot_"+field} style={{padding:"7px 10px",textAlign:"right",
-                            color:T.numColor,fontWeight:700,whiteSpace:"nowrap",
-                            borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",
-                            background:"rgba(92,45,26,0.04)"}}>
-                            {fmtNum(row[field])}
-                          </td>
-                        ))}
+                        {cVals.map(cv=>viewValues.map(({field},vi)=>{
+                          const cv_val=row.__cGroups?.[cv]?.[field];
+                          return<td key={cv+"_"+field}
+                            onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field+" · "+cv)}
+                            style={{...vCellStyle(isL1?T.bgStat:rowBg,vi,{borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)",color:cv_val!=null?T.numColor:T.textMd})}}
+                            title="Click to see raw records">
+                            {cv_val!=null?fmtNum(cv_val):"—"}</td>;
+                        }))}
+                        {viewValues.map(({field},vi)=><td key={"tot_"+field}
+                          onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field+" (Total)")}
+                          style={{...vCellStyle("rgba(92,45,26,0.04)",vi,{borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",fontWeight:700})}}
+                          title="Click to see raw records">{fmtNum(row[field])}</td>)}
                       </>
                     ):(
-                      viewValues.map(({field})=>(
-                        <td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,
-                          background:rowBg,whiteSpace:"nowrap",opacity:0.9}}>
-                          {fmtNum(row[field])}
-                        </td>
-                      ))
+                      viewValues.map(({field})=><td key={field}
+                        onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field)}
+                        style={{...vCellStyle(isL1?T.bgStat:rowBg,0,{})}}
+                        onMouseEnter={e=>e.currentTarget.style.background="rgba(92,45,26,0.08)"}
+                        onMouseLeave={e=>e.currentTarget.style.background=isL1?T.bgStat:rowBg}
+                        title="Click to see raw records">{fmtNum(row[field])}</td>)
                     )}
                     {/* Separator before collab */}
                     <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:isL1?T.bgStat:rowBg}}/>
-                    {/* Collab cells: level-1 shows "—", level-2 and single-level show input */}
-                    {isL1?(
-                      <>
-                        {columns.map(col=><td key={col.id} style={{padding:"8px 14px",color:T.textMd,textAlign:"center"}}>—</td>)}
-                        {wfCols.map(col=><td key={"appr_"+col.id} style={{borderLeft:"1px solid "+T.border}}/>)}
-                        {columns.some(c=>c.col_type==="workflow")&&<td style={{borderLeft:"2px solid "+T.borderDk}}/>}
-                      </>
-                    ):(
-                      <>
-                        {renderCollabCells(rk)}
-                        {renderApprovalCells(rk)}
-                        {columns.some(c=>c.col_type==="workflow")&&<td style={{padding:"8px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>{totalApprovalBadge(wfCols,rk)}</td>}
-                      </>
-                    )}
+                    {/* Collab inputs — ALWAYS on main rows (primary level), never on sub-rows */}
+                    {renderCollabCells(rk)}
+                    {renderApprovalCells(rk)}
+                    {columns.some(c=>c.col_type==="workflow")&&<td style={{padding:"8px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>{totalApprovalBadge(wfCols,rk)}</td>}
                     <td style={{padding:"8px 14px",textAlign:"center"}}>
-                      {!isL1&&<button onClick={e=>{e.stopPropagation();openAudit(rk);}} title="View audit trail"
+                      <button onClick={()=>openAudit(rk)} title="View audit trail"
                         style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
                         🕵
-                      </button>}
+                      </button>
                     </td>
                   </tr>
 
-                  {/* ── Level-2 inner rows (hierarchical expand) ── */}
+                  {/* ── Level-2 sub-rows (expand from level-1) — values only, NO collab inputs ── */}
                   {isL1Expanded&&innerRows.map((inner,ii)=>{
                     const innerRk=inner.__rk;
                     const innerBg=ii%2===0?T.bgCard:T.bgAlt;
                     return(
-                      <tr key={innerRk} style={{background:innerBg,borderBottom:"1px solid "+T.border,cursor:"pointer"}}
-                        onClick={()=>setDrillDown({rowKey:viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),colVal:null,rFs:viewRows,cF:null,metricLabel:"Workflow View — "+innerRk})}>
+                      <tr key={innerRk} style={{background:innerBg,borderBottom:"0.5px solid "+T.border}}>
+                        {/* Row label cells — indented, NOT clickable */}
                         {viewRows.map((rf,i)=>(
-                          <td key={rf} style={{padding:"7px 14px 7px "+(i===0?32:14)+"px",color:i===0?T.textMd:T.text,fontWeight:i===0?400:500,
-                            fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                          <td key={rf} style={{padding:"6px 14px 6px "+(i===0?32:14)+"px",
+                            color:i===0?T.textMd:T.text,fontWeight:i===0?400:500,fontSize:12,
+                            overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
                             borderLeft:i>0?"1px solid "+T.border:"none"}}>
-                            {i===0?<span style={{color:T.textMd,marginRight:4}}>⤷</span>:null}
+                            {i===0&&<span style={{color:T.textMd,marginRight:3,fontSize:10}}>⤷</span>}
                             {String(inner[rf]||"")}
                           </td>
                         ))}
-                        {viewCols.map(cf=><td key={cf} style={{padding:"7px 14px",fontSize:12,color:T.text,borderLeft:"1px solid "+T.border}}>{String(inner[cf]||"—")}</td>)}
+                        {viewCols.map(cf=><td key={cf} style={{padding:"6px 14px",fontSize:12,color:T.text,borderLeft:"1px solid "+T.border}}>{String(inner[cf]||"—")}</td>)}
+                        {/* Separator */}
                         {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:innerBg}}/>}
-                        {renderVCells(inner,innerBg)}
+                        {/* Value cells — CLICKABLE → drill-down for this specific sub-group */}
+                        {cField?(
+                          <>
+                            {cVals.map(cv=>viewValues.map(({field},vi)=>{
+                              const cv_val=inner.__cGroups?.[cv]?.[field];
+                              return<td key={cv+"_"+field}
+                                onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field+" · "+cv)}
+                                style={{...vCellStyle(innerBg,vi,{borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)",color:cv_val!=null?T.numColor:T.textMd,fontSize:12})}}
+                                title="Click to see raw records">{cv_val!=null?fmtNum(cv_val):"—"}</td>;
+                            }))}
+                            {viewValues.map(({field},vi)=><td key={"tot_"+field}
+                              onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field)}
+                              style={{...vCellStyle("rgba(92,45,26,0.04)",vi,{borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",fontWeight:600,fontSize:12})}}
+                              title="Click to see raw records">{fmtNum(inner[field])}</td>)}
+                          </>
+                        ):(
+                          viewValues.map(({field})=><td key={field}
+                            onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field)}
+                            style={{...vCellStyle(innerBg,0,{fontSize:12})}}
+                            onMouseEnter={e=>e.currentTarget.style.background="rgba(92,45,26,0.08)"}
+                            onMouseLeave={e=>e.currentTarget.style.background=innerBg}
+                            title="Click to see raw records">{fmtNum(inner[field])}</td>)
+                        )}
+                        {/* Separator — empty collab cells to keep alignment */}
                         <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:innerBg}}/>
-                        {renderCollabCells(innerRk)}
-                        {renderApprovalCells(innerRk)}
-                        {columns.some(c=>c.col_type==="workflow")&&<td style={{padding:"7px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>{totalApprovalBadge(wfCols,innerRk)}</td>}
-                        <td style={{padding:"7px 14px",textAlign:"center"}}>
-                          <button onClick={e=>{e.stopPropagation();openAudit(innerRk);}} title="View audit trail"
-                            style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
-                            🕵
-                          </button>
-                        </td>
+                        {columns.map(col=><td key={col.id}/>)}
+                        {wfCols.map(col=><td key={"appr_"+col.id}/>)}
+                        {columns.some(c=>c.col_type==="workflow")&&<td/>}
+                        <td/>
                       </tr>
                     );
                   })}
