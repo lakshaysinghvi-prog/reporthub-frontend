@@ -1625,7 +1625,7 @@ function FormatSelector({value,onChange,allowedFmts}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange,onFiltersChange,onSaveFilters,onSaveColFilters,externalFilters,externalPivotFilters,onExternalFiltersChange,onExternalPivotFiltersChange}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange,onTabDelete,onFiltersChange,onSaveFilters,onSaveColFilters,externalFilters,externalPivotFilters,onExternalFiltersChange,onExternalPivotFiltersChange}) {
   // Defensive: ensure numFields is always a Set
   // Priority: 1) DB numFields  2) config.values (admin-declared)  3) auto-detect
   numFields = useMemo(()=>{
@@ -1898,9 +1898,13 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
                 <button onClick={(e)=>{
                     e.stopPropagation();
                     if(confirm("Delete tab "+(t.name||"Untitled")+"?")){
-                      const nt=tabs.filter((_,idx)=>idx!==i);
-                      onTabsChange(nt);
-                      if(activeTabIdx>=nt.length)onTabChange(Math.max(0,nt.length-1));
+                      if(onTabDelete){
+                        onTabDelete(i); // single atomic delete+switch — avoids setConfig race
+                      } else {
+                        const nt=tabs.filter((_,idx)=>idx!==i);
+                        onTabsChange(nt);
+                        if(activeTabIdx>=nt.length)onTabChange(Math.max(0,nt.length-1));
+                      }
                     }
                   }}
                   title="Delete tab"
@@ -3459,7 +3463,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     });
   }
 
-  const preview=useMemo(()=>dataset&&config?runPivot(dataset.rows,config,{}):[],[dataset,config]);
+  // Apply saved tab filters to the live preview so it matches what users see
+  const previewFilters=adminGlobalFilters[adminFilterKey(activeTabIdx)]||{};
+  const preview=useMemo(()=>dataset&&config?runPivot(dataset.rows,config,previewFilters):[],[dataset,config,previewFilters]);
   const fieldStatus=useMemo(()=>{
     if (!dataset||!config) return {};
     const z={};
@@ -3659,23 +3665,41 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             activeTabIdx={activeTabIdx}
             onTabChange={(idx)=>{
               if(idx===activeTabIdx)return;
-              // STEP 1: Capture current edits of active tab back into config.tabs
-              const currentTabs=config.tabs||[];
-              const updatedTabs=currentTabs.map((t,i)=>
-                i===activeTabIdx
-                  ? {...t,config:{...config,tabs:undefined,name:undefined},cardFields:[...cardFields]}
-                  : t
-              );
-              // STEP 2: Switch to target tab's config
-              const target=updatedTabs[idx];
-              if (target) {
-                setConfig({...config,...target.config,name:config.name,tabs:updatedTabs});
-                if(target.cardFields)setCardFields([...target.cardFields]);
-              }
-              // If target doesn't exist yet (tab being created in the same batch),
-              // do NOT call setConfig here — it would overwrite the functional update
-              // from onTabsChange and wipe the newly created tabs array.
+              // Use functional setConfig so we always read latest state —
+              // prevents stale-closure overwrites when called alongside onTabsChange
+              setConfig(prevCfg=>{
+                const prevTabs=prevCfg.tabs||[];
+                // Save current active tab edits
+                const savedTabs=prevTabs.map((t,i)=>
+                  i===activeTabIdx
+                    ? {...t,config:{...prevCfg,tabs:undefined,name:undefined},cardFields:[...cardFields]}
+                    : t
+                );
+                const target=savedTabs[idx];
+                if(target){
+                  if(target.cardFields)setCardFields([...target.cardFields]);
+                  return {...prevCfg,...target.config,name:prevCfg.name,tabs:savedTabs};
+                }
+                // Target doesn't exist yet (being created in same batch) — just return as-is
+                return prevCfg;
+              });
               setActiveTabIdx(idx);
+            }}
+            onTabDelete={(delIdx)=>{
+              // Atomic: remove tab + load new active tab in one setConfig call
+              // avoids the setConfig race that made tabs reappear after deletion
+              setConfig(prevCfg=>{
+                const nt=(prevCfg.tabs||[]).filter((_,i)=>i!==delIdx);
+                if(!nt.length){if(setCardFields)setCardFields([]);return {...prevCfg,tabs:undefined};}
+                const newIdx=delIdx>=nt.length?nt.length-1:delIdx;
+                const target=nt[newIdx];
+                if(target){
+                  if(target.cardFields)setCardFields([...target.cardFields]);
+                  return {...prevCfg,...target.config,name:prevCfg.name,tabs:nt};
+                }
+                return {...prevCfg,tabs:nt};
+              });
+              setActiveTabIdx(prev=>prev>=((config.tabs||[]).length-1)?Math.max(0,(config.tabs||[]).length-2):prev);
             }}
             onTabsChange={(newTabs)=>{
               // Called for: add/delete/rename/reorder. Always preserve active-tab edits.
