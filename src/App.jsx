@@ -260,7 +260,7 @@ function exportExcel(result, config, numFmt) {
   rows.push(colHdr);
   // Data rows
   rowKeys.forEach(rk => {
-    const rkStr = rk.join(" ");
+    const rkStr = rk.join("\0");
     const row = [...rk];
     if (hasGroups) {
       colVals.forEach(cv => vals.forEach((_,vi) => row.push(((cells[rkStr]||{})[cv]||[])[vi]||0)));
@@ -4453,8 +4453,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
             <div>
               <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:12}}>Monthly Cycles</div>
               {/* Open new cycle */}
-              {!cycles.some(c=>c.status==="open")&&(
-                <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14,marginBottom:14}}>
+              <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14,marginBottom:14}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>Open New Cycle</div>
                   <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
                     <div style={{flex:1,minWidth:160}}>
@@ -4473,7 +4472,6 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                     </button>
                   </div>
                 </div>
-              )}
               {/* Cycle list */}
               {cycles.length===0&&<div style={{color:T.textMd,fontSize:13,padding:"8px 0"}}>No cycles yet.</div>}
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -4518,7 +4516,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                         Close Cycle
                       </button>
                     )}
-                    {c.status==="closed"&&!isRenaming&&!cycles.some(x=>x.status==="open")&&(
+                    {c.status==="closed"&&!isRenaming&&(
                       <button onClick={()=>reopenCycle(c.id)} disabled={saving}
                         style={{padding:"5px 12px",background:T.success,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
                         ↩ Reopen
@@ -4818,8 +4816,10 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     if(!wfCols.length)return null;
     const entries=wfCols.map(col=>values[rk+"__"+col.id]);
     const approvedSum=entries.reduce((sum,v)=>{
-      if(v&&['approved','modified'].includes(v.status)&&v.value!==null&&v.value!==undefined)
-        return sum+parseFloat(v.value)||0;
+      if(v&&['approved','modified'].includes(v.status)){
+        const amt=v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0;
+        return sum+amt;
+      }
       return sum;
     },0);
     const allDone=entries.every(v=>v&&['approved','modified','rejected'].includes(v.status));
@@ -4939,24 +4939,30 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
       // Build value map
       const valMap={};vals.forEach(v=>{valMap[v.row_key+"__"+v.col_id]=v;});
       // Build header row
-      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...cols.filter(c=>c.col_type==="workflow").map(c=>"Approval — "+c.label),"Total Approval"];
+      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...cols.filter(c=>c.col_type==="workflow").map(c=>"Approved — "+c.label),"Total Approval"];
       // Build data rows — one per unique row key
       const rkMap={};
       dRows.forEach(row=>{
         const rk=viewRows.map(f=>String(row[f]||"")).join("||");
         if(!rkMap[rk])rkMap[rk]={row,rk};
       });
+      const effectiveAmt=(v)=>{
+        if(!v||!['approved','modified','rejected'].includes(v.status))return "";
+        if(v.status==='rejected')return 0;
+        return v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0;
+      };
       const sheetRows=[header,...Object.values(rkMap).map(({row,rk})=>{
         const wfCols=cols.filter(c=>c.col_type==="workflow");
         const approvedSum=wfCols.reduce((s,col)=>{
           const v=valMap[rk+"__"+col.id];
-          return s+(['approved','modified'].includes(v?.status)?parseFloat(v.value)||0:0);
+          if(!v||!['approved','modified'].includes(v.status))return s;
+          return s+(v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0);
         },0);
         return[
           ...viewRows.map(f=>row[f]||""),
           ...viewValues.map(({field})=>row[field]||0),
           ...cols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.value??"";}),
-          ...wfCols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.status||"";}),
+          ...wfCols.map(col=>effectiveAmt(valMap[rk+"__"+col.id])),
           approvedSum,
         ];
       })];
@@ -5336,12 +5342,13 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 const renderApprovalCells=(cellRk)=>wfCols.map(col=>{
                   const dk=draftKey(cellRk,col.id);const existing=values[dk];
                   const cycleClosed=activeCycle?.status==="closed";const canR=!cycleClosed&&canReview(col);
-                  const showAmt=existing&&['approved','modified','hold'].includes(existing.status)&&existing.value!==null&&existing.value!==undefined;
+                  const effectiveVal=existing?.reviewer_value!=null?existing.reviewer_value:existing?.value;
+                  const showAmt=existing&&['approved','modified','hold'].includes(existing.status)&&effectiveVal!=null;
                   const rejAmt=existing?.status==='rejected';
                   return<td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
                     {existing?statusBadge(existing.status):<span style={{fontSize:11,color:T.textMd}}>—</span>}
                     {/* Show the effective amount after action */}
-                    {showAmt&&<div style={{fontSize:12,fontWeight:600,color:T.numColor,marginTop:3}}>{fmtNum(existing.value)}</div>}
+                    {showAmt&&<div style={{fontSize:12,fontWeight:600,color:T.numColor,marginTop:3}}>{fmtNum(effectiveVal)}</div>}
                     {rejAmt&&<div style={{fontSize:12,color:T.textMd,marginTop:3}}>0</div>}
                     {canR&&existing?.status==="submitted"&&(
                       <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");setReviewValue(String(existing.value??""));}}
