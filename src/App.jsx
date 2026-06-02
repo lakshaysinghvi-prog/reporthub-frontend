@@ -4746,7 +4746,13 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     try{
       const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
       setValues(v=>({...v,[dk]:saved}));
-      setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
+      // Only clear the draft if the user has NOT typed more digits since this save started.
+      // If they have (race: typed while API was in-flight), keep the newer draft so it gets saved by its own timer.
+      setDraftMap(d=>{
+        const cur=d[dk];
+        if(!cur||String(cur.value)===String(val)){const nd={...d};delete nd[dk];return nd;}
+        return d;
+      });
     }catch(e){setMsg("Error: "+e.message);}
     setSaving(s=>({...s,[dk]:false}));
   };
@@ -5325,7 +5331,12 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     {canI?(
                       <div style={{position:"relative",display:"inline-block"}}>
                         <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
-                          onFocus={()=>setFocusedCell(dk)}
+                          onFocus={(e)=>{
+                            setFocusedCell(dk);
+                            // Strip any formatting immediately so first keypress edits the raw number
+                            const clean=e.target.value.replace(/[^0-9.\-]/g,"");
+                            if(clean!==e.target.value)setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:clean||rawVal}}));
+                          }}
                           onChange={e=>{
                             const val=e.target.value.replace(/[^0-9.\-]/g,""); // allow digits, dot, minus only
                             setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
