@@ -226,7 +226,7 @@ const NUM_FORMATS = [
 ];
 
 const AGGS=["sum","avg","count","min","max","general"];
-const MAX_ROWS=100000, DRILL_PAGE=25, SLICER_SEARCH=30, SLICER_MAX=500, BLANK_THRESH=0.70;
+const MAX_ROWS=100000, DRILL_PAGE=25, SLICER_SEARCH=30, SLICER_MAX=500, BLANK_THRESH=0.95;
 const isMoneyField=f=>/sale|revenue|profit|price|amount|cost|income|spend|budget|fee|net|gross|pay|earn|cash|value|due|paid|deduct|bill/i.test(f);
 
 function fmtNum(n, agg, field, fmtKey, isCurrency) {
