@@ -3255,7 +3255,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     return s;
   },[dataset,typeOverrides]);
 
-  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setTab("builder");}
+  function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setActiveTabIdx(0);setTab("builder");}
   async function onDataRefresh(ds, targetId) {
     // targetId = which saved report to update data for
     const r = savedReports.find(x=>x.id===targetId);
@@ -3671,9 +3671,10 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               if (target) {
                 setConfig({...config,...target.config,name:config.name,tabs:updatedTabs});
                 if(target.cardFields)setCardFields([...target.cardFields]);
-              } else {
-                setConfig({...config,tabs:updatedTabs});
               }
+              // If target doesn't exist yet (tab being created in the same batch),
+              // do NOT call setConfig here — it would overwrite the functional update
+              // from onTabsChange and wipe the newly created tabs array.
               setActiveTabIdx(idx);
             }}
             onTabsChange={(newTabs)=>{
