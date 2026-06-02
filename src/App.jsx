@@ -2601,6 +2601,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const [fileInfo,setFileInfo]=useState(null);
   const [sheetNames,setSheetNames]=useState([]);
   const [workbook,setWorkbook]=useState(null);
+  const [rangeOverride,setRangeOverride]=useState(""); // manual cell range e.g. "A1:AM5000"
   const [schema,setSchema]=useState([]);
   const [previewRows,setPreviewRows]=useState([]);
   const [allRows,setAllRows]=useState([]);
@@ -2631,7 +2632,12 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   }
 
   function processRaw(rawRows,name) {
-    try{const{rows,fields}=sanitizeRows(rawRows);applySchema(rows,fields,name);}
+    try{
+      const{rows,fields}=sanitizeRows(rawRows);
+      if (rawRows.length>0&&rows.length<rawRows.length*0.75)
+        console.warn("Range note: "+rawRows.length+" raw → "+rows.length+" after blank removal. Use manual range override if total seems low.");
+      applySchema(rows,fields,name);
+    }
     catch(e){setParseError("Cleaning error: "+e.message);setPhase("error");}
   }
 
@@ -2641,7 +2647,10 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
       try{
         const ws=wb.Sheets[sheetName];
         if (!ws){setParseError("Sheet not found: "+sheetName);setPhase("error");return;}
-        if (ws["!ref"]){
+        if (rangeOverride.trim()) {
+          try { libs.XLSX.utils.decode_range(rangeOverride.trim()); ws["!ref"]=rangeOverride.trim().toUpperCase(); }
+          catch(e) { /* invalid range — ignore */ }
+        } else if (ws["!ref"]){
           const r=libs.XLSX.utils.decode_range(ws["!ref"]);
           if (r.e.r>MAX_ROWS){r.e.r=MAX_ROWS;ws["!ref"]=libs.XLSX.utils.encode_range(r);}
         }
@@ -2665,7 +2674,8 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
         const buf=await file.arrayBuffer();
         const wb=libs.XLSX.read(buf,{type:"array",cellDates:true});
         setWorkbook(wb);
-        if (wb.SheetNames.length===1)loadSheet(wb,wb.SheetNames[0]);
+        setWorkbook(wb);
+        if (wb.SheetNames.length===1){setSheetNames(wb.SheetNames);setPhase("sheet");}
         else{setSheetNames(wb.SheetNames);setPhase("sheet");}
       }
     }catch(e){setParseError("Read error: "+e.message);setPhase("error");}
@@ -2988,7 +2998,24 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
               </button>
             ))}
           </div>
-          <button onClick={()=>{setPhase("drop");setWorkbook(null);}} style={{marginTop:14,fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Different file</button>
+          {/* Manual range override */}
+          <div style={{marginTop:14,padding:"12px 16px",background:T.bgStat,borderRadius:8,border:"1px solid "+T.border}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.textMd,marginBottom:6}}>
+              📐 Manual range override <span style={{fontWeight:400}}>— if not all rows are loading</span>
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input value={rangeOverride} onChange={e=>setRangeOverride(e.target.value.toUpperCase())}
+                placeholder="e.g. A1:AM10000"
+                style={{flex:1,padding:"6px 10px",border:"1px solid "+T.border,borderRadius:6,
+                  fontSize:13,background:T.bgCard,color:T.text,outline:"none",fontFamily:"monospace"}}/>
+              {rangeOverride&&<button onClick={()=>setRangeOverride("")}
+                style={{padding:"6px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:12,color:T.textMd}}>Clear</button>}
+            </div>
+            <div style={{fontSize:11,color:T.textMd,marginTop:4}}>
+              In Excel: press Ctrl+End to jump to last used cell. Enter A1:[that cell] here, then click a sheet.
+            </div>
+          </div>
+          <button onClick={()=>{setPhase("drop");setWorkbook(null);setRangeOverride("");}} style={{marginTop:14,fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Different file</button>
         </div>
       )}
 
