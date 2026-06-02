@@ -20,12 +20,14 @@ async function api(path, options = {}) {
     ...options,
   });
   if (!res.ok) {
-    if (res.status === 401) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    if (res.status === 401 && err.error !== 'needs_auth') {
+      // Only clear session for ReportHub JWT failures (Invalid token / No token).
+      // Do NOT clear for third-party OAuth failures (needs_auth from Microsoft/Google).
       localStorage.removeItem('rh_token');
       throw new Error('Session expired. Please log in again.');
     }
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `HTTP ${res.status}`);
+    throw new Error(err.message || err.error || `HTTP ${res.status}`);
   }
   return res.json();
 }

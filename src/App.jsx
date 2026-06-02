@@ -3532,13 +3532,25 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             const r=savedReports.find(x=>x.id===lk.reportId);
             const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(Object.keys(result.rows[0]||{}).filter(k=>!isNaN(parseFloat(result.rows[0][k])))))]:[...Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")];
             await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
-            // Update lastRefreshed in config
+            // Persist lastRefreshed in the report's config so it survives page reload
             if(r){
               const newLinks=(r.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:Date.now()}:x);
+              const updatedCfg={...r.config,sourceLinks:newLinks};
+              // Save updated config to backend (fire-and-forget — data was already saved above)
+              try{await updateReportConfig(lk.reportId,updatedCfg);}catch(e){/* non-critical */}
               setConfig(cfg=>({...cfg,sourceLinks:newLinks}));
             }
-            showToast("Refreshed: "+lk.label);
-          }catch(e){showToast("Refresh failed: "+e.message);}
+            showToast("✓ Data refreshed: "+lk.label);
+          }catch(e){
+            // Provide actionable message for Microsoft/Google auth failures
+            const msg=e.message||"";
+            if(msg.includes("Connect your Microsoft")||msg.includes("needs_auth")||msg.includes("connect your Microsoft"))
+              showToast("⚠ SharePoint connection expired — go to Upload → Connect Microsoft Account to reconnect");
+            else if(msg.includes("Connect your Google")||msg.includes("google"))
+              showToast("⚠ Google Drive connection expired — go to Upload → Connect Google Account to reconnect");
+            else
+              showToast("Refresh failed: "+msg);
+          }
           finally{setApiLoading(false);}
         }}/>}
 
