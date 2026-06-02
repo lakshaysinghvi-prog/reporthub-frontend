@@ -4734,14 +4734,14 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const draft=draftMap[dk]||{};
     const val=draft.value!==undefined?draft.value:null;
     if(val===null||val==="")return;
+    // If this draft was set by a validation revert (not user input), skip saving it
+    if(draft.isReverted)return;
     const validationErr=validateInput(rk,col,val);
     if(validationErr){
-      // Cancel any pending timer for this cell
       if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
-      // Show popup near the input (per-cell, not global banner)
       setCellErrors(e=>({...e,[dk]:validationErr}));
-      // Revert display to 0
-      setDraftMap(d=>({...d,[dk]:{value:"0"}}));
+      // Mark draft as reverted-to-zero so blur/auto-save won't save it
+      setDraftMap(d=>({...d,[dk]:{value:"0",isReverted:true}}));
       return;
     }
     setCellErrors(e=>{const n={...e};delete n[dk];return n;});
@@ -5333,11 +5333,12 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                     {canI?(
                       <div style={{position:"relative",display:"inline-block"}}>
                         <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
+                          onFocus={e=>e.target.select()}
                           onChange={e=>{
                             const val=e.target.value.replace(/[^0-9.\-]/g,"");
-                            // Clear validation error as soon as user starts correcting
+                            // Clear error and isReverted flag as soon as user types something new
                             if(cellErr)setCellErrors(er=>({...er,[dk]:null}));
-                            setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
+                            setDraftMap(d=>({...d,[dk]:{value:val}})); // fresh object clears isReverted
                             if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
                             autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
                           }}
@@ -5352,12 +5353,18 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                         {isSav&&<span style={{position:"absolute",right:-18,top:7,fontSize:10,color:T.textMd}}>…</span>}
                         {cellErr&&(
                           <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,zIndex:200,
-                            background:"#5C2D1A",color:"#FFF5EE",borderRadius:7,padding:"6px 10px",
-                            fontSize:11,whiteSpace:"nowrap",boxShadow:"0 3px 12px rgba(44,24,16,0.35)",
-                            maxWidth:260,lineHeight:1.4}}>
+                            background:"#5C2D1A",color:"#FFF5EE",borderRadius:7,
+                            padding:"7px 28px 7px 10px",
+                            fontSize:11,whiteSpace:"normal",wordBreak:"break-word",
+                            boxShadow:"0 4px 14px rgba(44,24,16,0.4)",
+                            maxWidth:260,lineHeight:1.5,minWidth:160}}>
                             ⚠ {cellErr}
                             <button onClick={()=>setCellErrors(er=>({...er,[dk]:null}))}
-                              style={{marginLeft:6,background:"none",border:"none",color:"#FFC0A0",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1}}>✕</button>
+                              style={{position:"absolute",top:5,right:5,
+                                background:"rgba(255,255,255,0.25)",border:"none",
+                                color:"#fff",cursor:"pointer",fontSize:12,fontWeight:900,
+                                lineHeight:1,borderRadius:3,padding:"2px 5px",display:"flex",
+                                alignItems:"center",justifyContent:"center"}}>✕</button>
                           </div>
                         )}
                       </div>
