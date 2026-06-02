@@ -4604,7 +4604,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [colSorts,setColSorts]=useState({});           // {field: 'az'|'za'|'09'|'90'}
   const [expanded,setExpanded]=useState(new Set());   // level-1 group keys that are expanded (hierarchical mode)
   const [drillDown,setDrillDown]=useState(null);      // {rowKey,colVal,rFs,cF,metricLabel} — raw record drill-down panel
-  const [focusedCell,setFocusedCell]=useState(null);  // dk key of the currently focused input cell
+  const [cellErrors,setCellErrors]=useState({});      // {dk: errorMessage} — per-cell validation popup
   // Fresh config from API (overrides stale prop after Save View Config)
   const [freshConfig,setFreshConfig]=useState(null);
 
@@ -4736,12 +4736,15 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     if(val===null||val==="")return;
     const validationErr=validateInput(rk,col,val);
     if(validationErr){
-      setMsg("⚠ "+validationErr);
-      setTimeout(()=>setMsg(""),4000);
-      // Revert the cell back to zero (clear the invalid draft)
-      setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
+      // Cancel any pending timer for this cell
+      if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
+      // Show popup near the input (per-cell, not global banner)
+      setCellErrors(e=>({...e,[dk]:validationErr}));
+      // Revert display to 0
+      setDraftMap(d=>({...d,[dk]:{value:"0"}}));
       return;
     }
+    setCellErrors(e=>{const n={...e};delete n[dk];return n;});
     setSaving(s=>({...s,[dk]:true}));
     try{
       const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
@@ -5321,39 +5324,42 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 const renderCollabCells=(cellRk)=>columns.map(col=>{
                   const dk=draftKey(cellRk,col.id);
                   const existing=values[dk];const draft=draftMap[dk];
-                  const rawVal=draft?.value!==undefined?String(draft.value):(existing?.value!==undefined?String(existing.value):"");
-                  const isFocused=focusedCell===dk;
-                  // Show Indian-formatted number when not focused; raw number when focused/editing
-                  const displayVal=isFocused||!rawVal?rawVal:(!isNaN(Number(rawVal))?Number(rawVal).toLocaleString('en-IN',{maximumFractionDigits:2}):rawVal);
+                  // Always show raw number in the input — no formatting (avoids focus/cursor instability)
+                  const displayVal=draft?.value!==undefined?String(draft.value):(existing?.value!==undefined?String(existing.value):"");
                   const isSav=saving[dk];const cycleClosed=activeCycle?.status==="closed";const canI=!cycleClosed&&canInput(col);
                   const isDirty=draft?.value!==undefined;
+                  const cellErr=cellErrors[dk];
                   return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"middle"}}>
                     {canI?(
                       <div style={{position:"relative",display:"inline-block"}}>
                         <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
-                          onFocus={(e)=>{
-                            setFocusedCell(dk);
-                            // Strip any formatting immediately so first keypress edits the raw number
-                            const clean=e.target.value.replace(/[^0-9.\-]/g,"");
-                            if(clean!==e.target.value)setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:clean||rawVal}}));
-                          }}
                           onChange={e=>{
-                            const val=e.target.value.replace(/[^0-9.\-]/g,""); // allow digits, dot, minus only
+                            const val=e.target.value.replace(/[^0-9.\-]/g,"");
+                            // Clear validation error as soon as user starts correcting
+                            if(cellErr)setCellErrors(er=>({...er,[dk]:null}));
                             setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
-                            // Auto-save 800ms after last keystroke
                             if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
                             autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
                           }}
                           onBlur={()=>{
-                            setFocusedCell(null);
-                            // On Tab/blur: cancel timer and save immediately
                             if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
                             saveDraft(cellRk,col);
                           }}
                           disabled={isSav}
-                          style={{width:110,padding:"5px 9px",border:"1px solid "+(isDirty?"#C8922A":T.border),borderRadius:6,fontSize:13,
-                            background:isDirty?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                          style={{width:110,padding:"5px 9px",borderRadius:6,fontSize:13,outline:"none",
+                            border:"1px solid "+(cellErr?"#A32D2D":isDirty?"#C8922A":T.border),
+                            background:cellErr?"#FFF0F0":isDirty?"#FFFDE7":T.bgCard}}/>
                         {isSav&&<span style={{position:"absolute",right:-18,top:7,fontSize:10,color:T.textMd}}>…</span>}
+                        {cellErr&&(
+                          <div style={{position:"absolute",top:"calc(100% + 4px)",left:0,zIndex:200,
+                            background:"#5C2D1A",color:"#FFF5EE",borderRadius:7,padding:"6px 10px",
+                            fontSize:11,whiteSpace:"nowrap",boxShadow:"0 3px 12px rgba(44,24,16,0.35)",
+                            maxWidth:260,lineHeight:1.4}}>
+                            ⚠ {cellErr}
+                            <button onClick={()=>setCellErrors(er=>({...er,[dk]:null}))}
+                              style={{marginLeft:6,background:"none",border:"none",color:"#FFC0A0",cursor:"pointer",fontSize:11,fontWeight:700,lineHeight:1}}>✕</button>
+                          </div>
+                        )}
                       </div>
                     ):(
                       <span style={{fontSize:13,color:T.text,minWidth:60,display:"block",textAlign:"right",paddingRight:4}}>
