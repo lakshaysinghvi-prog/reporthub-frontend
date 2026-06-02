@@ -4734,7 +4734,13 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const val=draft.value!==undefined?draft.value:null;
     if(val===null||val==="")return;
     const validationErr=validateInput(rk,col,val);
-    if(validationErr){setMsg("⚠ "+validationErr);setTimeout(()=>setMsg(""),4000);return;}
+    if(validationErr){
+      setMsg("⚠ "+validationErr);
+      setTimeout(()=>setMsg(""),4000);
+      // Revert the cell back to zero (clear the invalid draft)
+      setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
+      return;
+    }
     setSaving(s=>({...s,[dk]:true}));
     try{
       const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
@@ -4939,7 +4945,8 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
       // Build value map
       const valMap={};vals.forEach(v=>{valMap[v.row_key+"__"+v.col_id]=v;});
       // Build header row
-      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...cols.filter(c=>c.col_type==="workflow").map(c=>"Approved — "+c.label),"Total Approval"];
+      const wfColsExp=cols.filter(c=>c.col_type==="workflow");
+      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...wfColsExp.map(c=>"Approved — "+c.label),...wfColsExp.map(c=>"Status — "+c.label),"Total Approval"];
       // Build data rows — one per unique row key
       const rkMap={};
       dRows.forEach(row=>{
@@ -4963,6 +4970,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           ...viewValues.map(({field})=>row[field]||0),
           ...cols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.value??"";}),
           ...wfCols.map(col=>effectiveAmt(valMap[rk+"__"+col.id])),
+          ...wfCols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.status||"";}),
           approvedSum,
         ];
       })];
@@ -5332,7 +5340,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                       </div>
                     ):(
                       <span style={{fontSize:13,color:T.text,minWidth:60,display:"block",textAlign:"right",paddingRight:4}}>
-                        {existing?.value!==undefined&&existing.value!==null?String(existing.value):"—"}
+                        {existing?.value!==undefined&&existing.value!==null?fmtNum(existing.value):"—"}
                       </span>
                     )}
                   </td>;
