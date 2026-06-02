@@ -2595,7 +2595,7 @@ function OAuthPanel() {
 }
 
 
-function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh}) {
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh, onDeleteLink}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -2854,10 +2854,24 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
               <span style={{fontSize:11,color:T.textMd}}>No need to open the report first · refresh runs in the background</span>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:0}}>
-              {savedLinks.map((lk,idx)=>(
+              {savedLinks.map((lk,idx)=>{
+                // Show delete only when the linked report has no other active source link
+                // (i.e. this is the only link — removing it leaves the report with static data)
+                const linkedReport = savedReports&&savedReports.find(r=>r.id===lk.reportId);
+                const reportLinkCount = linkedReport
+                  ? (linkedReport.config&&linkedReport.config.sourceLinks||[]).length
+                  : 0;
+                const canDelete = reportLinkCount <= 1; // only link, or report not found
+                return(
                 <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:idx<savedLinks.length-1?"0.5px solid "+T.border:"none",background:idx%2===0?T.bgCard:T.bgStat}}>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:600,fontSize:12,color:T.text,marginBottom:2}}>{lk.label}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+                      <span style={{fontWeight:600,fontSize:12,color:T.text}}>{lk.label}</span>
+                      {linkedReport&&<span style={{fontSize:10,color:T.textMd,background:T.bgStat,
+                        border:"1px solid "+T.border,borderRadius:4,padding:"1px 6px"}}>
+                        {linkedReport.name}
+                      </span>}
+                    </div>
                     <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
                     {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
                     <div style={{fontSize:10,color:lk.lastRefreshed?T.success:T.textMd,marginTop:1}}>
@@ -2866,12 +2880,25 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                         : "Not yet refreshed — click ↻ Refresh to pull latest data"}
                     </div>
                   </div>
-                  <button onClick={()=>onQuickRefresh&&onQuickRefresh(lk)}
-                    style={{padding:"5px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,flexShrink:0,whiteSpace:"nowrap"}}>
-                    ↻ Refresh
-                  </button>
+                  <div style={{display:"flex",flexDirection:"column",gap:5,flexShrink:0}}>
+                    <button onClick={()=>onQuickRefresh&&onQuickRefresh(lk)}
+                      style={{padding:"5px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
+                      ↻ Refresh
+                    </button>
+                    {canDelete&&(
+                      <button onClick={()=>{
+                          if(!window.confirm("Remove this URL link from the report? The report will keep its current data but will no longer auto-refresh from this URL.")) return;
+                          onDeleteLink&&onDeleteLink(lk);
+                        }}
+                        style={{padding:"4px 10px",background:"none",border:"1px solid rgba(163,45,45,0.4)",
+                          borderRadius:6,cursor:"pointer",fontSize:11,color:"#A32D2D",textAlign:"center"}}>
+                        🗑 Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -3036,7 +3063,8 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                   setRefreshSheet(name);
                   setPhase("parsing"); setParseError("");
                   try{
-                    const result=await fetchFromUrl(url,name);
+                    // Pass rangeOverride to backend so it reads correct row range
+                    const result=await fetchUrlViaProxy(url, name, rangeOverride.trim()||undefined);
                     setLastRefresh(new Date());
                     processRaw(result.rows, url.split("/").pop().split("?")[0]||"Imported");
                   }catch(e){setParseError(e.message);setPhase("error");}
@@ -3054,8 +3082,25 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
               </button>
             ))}
           </div>
+          {/* Range override for URL-loaded files */}
+          <div style={{padding:"12px 16px",borderTop:"0.5px solid "+T.border,background:T.bgStat}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.textMd,marginBottom:6}}>
+              📐 Manual range override <span style={{fontWeight:400}}>— if not all rows load</span>
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input value={rangeOverride} onChange={e=>setRangeOverride(e.target.value.toUpperCase())}
+                placeholder="e.g. A1:AM10000  (leave blank for auto)"
+                style={{flex:1,padding:"6px 10px",border:"1px solid "+T.border,borderRadius:6,
+                  fontSize:13,background:T.bgCard,color:T.text,outline:"none",fontFamily:"monospace"}}/>
+              {rangeOverride&&<button onClick={()=>setRangeOverride("")}
+                style={{padding:"5px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:12,color:T.textMd}}>Clear</button>}
+            </div>
+            <div style={{fontSize:11,color:T.textMd,marginTop:4}}>
+              Open file in Excel → Ctrl+End → note the last cell (e.g. AM6321) → enter A1:AM6321 here, then click a sheet above.
+            </div>
+          </div>
           <div style={{padding:"10px 16px",borderTop:"0.5px solid "+T.border}}>
-            <button onClick={()=>{setPhase("drop");setParseError("");setSheetNames([]);}}
+            <button onClick={()=>{setPhase("drop");setParseError("");setSheetNames([]);setRangeOverride("");}}
               style={{fontSize:13,color:T.textMd,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
               Different URL
             </button>
@@ -3071,6 +3116,28 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
               <div style={{fontSize:13,color:T.textMd}}>
                 <strong>{parseStats&&parseStats.rows&&parseStats.rows.toLocaleString()}</strong> rows · <strong>{parseStats&&parseStats.fields}</strong> columns
                 · Column order preserved from source file
+              </div>
+              {/* Range override — re-parse with custom range if row count looks wrong */}
+              <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
+                <span style={{fontSize:11,color:T.textMd,fontWeight:600}}>Row count wrong?</span>
+                <input value={rangeOverride} onChange={e=>setRangeOverride(e.target.value.toUpperCase())}
+                  placeholder="Range override e.g. A1:AM6321"
+                  style={{padding:"5px 9px",border:"1px solid "+T.border,borderRadius:5,fontSize:12,
+                    background:T.bgCard,color:T.text,outline:"none",fontFamily:"monospace",width:200}}/>
+                <button onClick={()=>{
+                    if(!workbook||!refreshSheet) return;
+                    loadSheet(workbook, refreshSheet||sheetNames[0]||"");
+                  }}
+                  disabled={!rangeOverride.trim()||!workbook}
+                  style={{padding:"5px 12px",background:rangeOverride.trim()&&workbook?T.primary:"none",
+                    color:rangeOverride.trim()&&workbook?T.textLt:T.textMd,
+                    border:"1px solid "+(rangeOverride.trim()&&workbook?T.primary:T.border),
+                    borderRadius:5,cursor:rangeOverride.trim()&&workbook?"pointer":"not-allowed",
+                    fontSize:12,fontWeight:600,opacity:rangeOverride.trim()&&workbook?1:0.5}}>
+                  Re-parse
+                </button>
+                {rangeOverride&&<button onClick={()=>setRangeOverride("")}
+                  style={{padding:"5px 10px",background:"none",border:"none",cursor:"pointer",fontSize:11,color:T.textMd,textDecoration:"underline"}}>Clear</button>}
               </div>
             </div>
             <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
@@ -3544,6 +3611,18 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
       {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
         existingConfig={config} savedReports={savedReports}
         savedLinks={savedReports.flatMap(r=>(r.config&&r.config.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
+        onDeleteLink={async(lk)=>{
+          const r=savedReports.find(x=>x.id===lk.reportId);
+          if(!r) return;
+          // Remove this URL from the report's sourceLinks array
+          const newLinks=(r.config.sourceLinks||[]).filter(x=>x.url!==lk.url);
+          const updatedCfg={...r.config,sourceLinks:newLinks};
+          try{
+            await updateReportConfig(lk.reportId,updatedCfg);
+            await loadAllReports();
+            showToast("✓ URL link removed from "+r.name);
+          }catch(e){showToast("Failed to remove link: "+e.message);}
+        }}
         onQuickRefresh={async(lk)=>{
           // Quick refresh: fetch data + update the linked report directly
           setApiLoading(true);
