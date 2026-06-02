@@ -10,14 +10,19 @@ export default defineConfig({
       includeAssets: ['icons/*.png', 'icons/*.svg'],
       manifest: false, // we supply our own /public/manifest.json
       workbox: {
-        // Cache the Vite-built JS/CSS bundles
-        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
-        // Don't try to cache the Railway API — it's dynamic
+        // Only cache static icon assets — NOT html/js/css.
+        // Vite gives JS/CSS content-hashed names so browser HTTP cache handles them.
+        // NOT caching index.html means users always get the latest build references.
+        globPatterns: ['**/*.{ico,png,svg}'],
+        // Activate new service worker immediately without waiting for tabs to close.
+        // This ensures fresh code is served as soon as a new build is deployed.
+        skipWaiting: true,
+        clientsClaim: true,
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
-            // Cache API report metadata for offline fallback
+            // Report metadata: network-first so users see updates within 5s
             urlPattern: /\/api\/reports$/,
             handler: 'NetworkFirst',
             options: {
