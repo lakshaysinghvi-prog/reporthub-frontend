@@ -4604,6 +4604,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const [colSorts,setColSorts]=useState({});           // {field: 'az'|'za'|'09'|'90'}
   const [expanded,setExpanded]=useState(new Set());   // level-1 group keys that are expanded (hierarchical mode)
   const [drillDown,setDrillDown]=useState(null);      // {rowKey,colVal,rFs,cF,metricLabel} — raw record drill-down panel
+  const [focusedCell,setFocusedCell]=useState(null);  // dk key of the currently focused input cell
   // Fresh config from API (overrides stale prop after Save View Config)
   const [freshConfig,setFreshConfig]=useState(null);
 
@@ -4715,10 +4716,10 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const validateInput=(rk,col,val)=>{
     const vc=col.validation_config;
     if(!vc||!vc.field||!vc.rule)return null;
-    // Find the reference value from the current row
-    const row=dataRows.find(r=>viewRows.map(f=>String(r[f]||"")).join("||")===rk||String(r[viewRows[0]]||"")===rk);
-    if(!row)return null;
-    const refVal=parseFloat(row[vc.field])||0;
+    // Sum the reference field across ALL rows matching this row key (vendor summary level, not individual bill)
+    const matchingRows=dataRows.filter(r=>viewRows.map(f=>String(r[f]||"")).join("||")===rk||String(r[viewRows[0]]||"")===rk);
+    if(!matchingRows.length)return null;
+    const refVal=matchingRows.reduce((sum,r)=>sum+(parseFloat(r[vc.field])||0),0);
     const inputVal=parseFloat(val)||0;
     if(vc.rule==="lte"&&inputVal>refVal)
       return `${col.label}: value (${inputVal.toLocaleString()}) cannot exceed ${vc.field} (${refVal.toLocaleString()})`;
@@ -5314,13 +5315,17 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                 const renderCollabCells=(cellRk)=>columns.map(col=>{
                   const dk=draftKey(cellRk,col.id);
                   const existing=values[dk];const draft=draftMap[dk];
-                  const displayVal=draft?.value!==undefined?draft.value:(existing?.value!==undefined?existing.value:"");
+                  const rawVal=draft?.value!==undefined?String(draft.value):(existing?.value!==undefined?String(existing.value):"");
+                  const isFocused=focusedCell===dk;
+                  // Show Indian-formatted number when not focused; raw number when focused/editing
+                  const displayVal=isFocused||!rawVal?rawVal:(!isNaN(Number(rawVal))?Number(rawVal).toLocaleString('en-IN',{maximumFractionDigits:2}):rawVal);
                   const isSav=saving[dk];const cycleClosed=activeCycle?.status==="closed";const canI=!cycleClosed&&canInput(col);
                   const isDirty=draft?.value!==undefined;
                   return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"middle"}}>
                     {canI?(
                       <div style={{position:"relative",display:"inline-block"}}>
                         <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
+                          onFocus={()=>setFocusedCell(dk)}
                           onChange={e=>{
                             const val=e.target.value.replace(/[^0-9.\-]/g,""); // allow digits, dot, minus only
                             setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
@@ -5329,6 +5334,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                             autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
                           }}
                           onBlur={()=>{
+                            setFocusedCell(null);
                             // On Tab/blur: cancel timer and save immediately
                             if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
                             saveDraft(cellRk,col);
