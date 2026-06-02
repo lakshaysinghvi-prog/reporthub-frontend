@@ -9,7 +9,13 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getCustomCredentials, saveCustomCredentials, testCustomCredentials, deleteCustomCredentials,
          getReportAccess, setReportAccess,
          getPublishedReports, getPublishedReportData,
-         getRefreshSchedule, setRefreshSchedule } from "./api.js";
+         getRefreshSchedule, setRefreshSchedule,
+         getReportFields,
+         toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
+         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle, deleteCollabCycle, reopenCollabCycle,
+         exportCollabCycle,
+         getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
+         getCollabAudit, getCollabHistory } from "./api.js";
 
 // ── Palette (warm maroon / cream - matches vendor dashboard reference) ─────────
 const T = {
@@ -22,6 +28,15 @@ const T = {
   danger:   "#A32D2D", warning:  "#BA7517",
   tagR:"#534AB7", tagC:"#0F6E56", tagV:"#8B5A2B", tagF:"#185FA5", tagK:"#4A3060",
 };
+
+// ── Parse JWT payload to extract user id ──────────────────────────────────
+function getMyUserId() {
+  try {
+    const t = localStorage.getItem('rh_token');
+    if (!t) return null;
+    return JSON.parse(atob(t.split('.')[1])).id || null;
+  } catch(e) { return null; }
+}
 
 // ── useViewport hook — true if mobile (<700px) ────────────────────────────────
 function useViewport() {
@@ -245,7 +260,7 @@ function exportExcel(result, config, numFmt) {
   rows.push(colHdr);
   // Data rows
   rowKeys.forEach(rk => {
-    const rkStr = rk.join(" ");
+    const rkStr = rk.join("\0");
     const row = [...rk];
     if (hasGroups) {
       colVals.forEach(cv => vals.forEach((_,vi) => row.push(((cells[rkStr]||{})[cv]||[])[vi]||0)));
@@ -3225,6 +3240,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
   const [activeTabIdx,setActiveTabIdx]=useState(0); // active tab in multi-tab report
   const [accessPanel,setAccessPanel]=useState(null); // {id, name} of report whose access is being managed
+  const [collabPanel,setCollabPanel]=useState(null); // {id,name,config} for collab setup
+  const [collabViewPanel,setCollabViewPanel]=useState(null); // {id,name,report} for collab data view
   // Global filter store — survives Settings navigation
   const [adminGlobalFilters,setAdminGlobalFilters]=useState({});
   const [adminGlobalPivotFilters,setAdminGlobalPivotFilters]=useState({});
@@ -3460,6 +3477,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     ["data","Raw Data",!dataset],
     ["reports","Reports ("+savedReports.length+")"],
     ...(isSubAdminUser ? [["myreports","📋 My Reports"]] : []),
+    ...(!isSubAdminUser ? [["workflow","🤝 Workflow"]] : []),
   ];
   const tabBtn=(t,l,disabled)=>(
     <button key={t} onClick={()=>!disabled&&setTab(t)} style={{padding:"11px 16px",background:"none",border:"none",cursor:disabled?"not-allowed":"pointer",fontSize:13,
@@ -3539,11 +3557,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               </div>
 
               <div style={{borderTop:"0.5px solid "+T.border,paddingTop:10,display:"flex",flexDirection:"column",maxHeight:520,overflowY:"auto"}}>
-                {dataset.fields.map(f=>(
-                  <FieldRow key={f} field={f} isNum={effectiveNumFields.has(f)}
-                    status={fieldStatus[f]||{}} onToggle={toggleField}
-                    onToggleType={()=>toggleFieldType(f)} onToggleCard={()=>toggleCard(f)}/>
-                ))}
+                <FieldSearch fields={dataset.fields} numFields={effectiveNumFields}
+                  fieldStatus={fieldStatus} onToggle={toggleField}
+                  onToggleType={f=>toggleFieldType(f)} onToggleCard={f=>toggleCard(f)}/>
               </div>
             </div>
 
@@ -3796,8 +3812,19 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           onLoadReportData={onLoadReportData}
           onLogout={onLogout}/>
       )}
+      {tab==="workflow"&&!isSubAdminUser&&(
+        <WorkflowListTab
+          savedReports={savedReports}
+          currentUser={currentUser}
+          currentRole={currentRole}
+          onSetup={(r)=>setCollabPanel({id:r.id,name:r.name,report:r})}
+          onOpenView={(r)=>setCollabViewPanel({id:r.id,name:r.name,report:r})}
+          onReload={onReloadReports}/>
+      )}
       {showSettings&&<SettingsPanel currentUser={currentUser} currentRole={currentRole} onClose={()=>setShowSettings(false)}/>}
       {accessPanel&&<ReportAccessPanel reportId={accessPanel.id} reportName={accessPanel.name} onClose={()=>setAccessPanel(null)}/>}
+      {collabPanel&&<CollabSetupPanel report={collabPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>{setCollabPanel(null);onReloadReports();}}/>}
+      {collabViewPanel&&<CollabDataView report={collabViewPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>setCollabViewPanel(null)}/>}
       {saveDialog&&(
         <div style={{position:"fixed",inset:0,zIndex:600,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
           <div style={{background:T.bgCard,borderRadius:12,padding:28,width:"min(420px,90vw)",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
@@ -3815,6 +3842,1798 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               <button onClick={()=>commitSave(true)} style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700}}>
                 Overwrite
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Phase 3: Workflow List Tab ────────────────────────────────────────────────
+// Shows all reports; collab-enabled ones get an "Open Workflow" button
+function WorkflowListTab({savedReports,currentUser,currentRole,onSetup,onOpenView,onReload}) {
+  const [toggling,setToggling]=useState({});
+  const isBuilder=['admin','subadmin'].includes(currentRole);
+
+  const handleToggle=async(r)=>{
+    setToggling(t=>({...t,[r.id]:true}));
+    try{
+      await toggleCollab(r.id,!r.config?.collab_enabled);
+      onReload();
+    }catch(e){alert("Error: "+e.message);}
+    finally{setToggling(t=>({...t,[r.id]:false}));}
+  };
+
+  const collabReports=savedReports.filter(r=>r.config?.collab_enabled);
+  const otherReports=savedReports.filter(r=>!r.config?.collab_enabled);
+
+  const ReportCard=({r})=>(
+    <div key={r.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:"14px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+      <div style={{flex:1,minWidth:140}}>
+        <div style={{fontWeight:600,fontSize:14,color:T.text}}>{r.name}</div>
+        <div style={{fontSize:11,color:T.textMd,marginTop:2}}>{r.row_count||0} rows · {r.config?.collab_enabled?"🟢 Collab ON":"⚪ Standard"}</div>
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {r.config?.collab_enabled&&(
+          <>
+            {isBuilder&&<button onClick={()=>onSetup(r)}
+              style={{padding:"6px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              ⚙ Setup Columns & Cycle
+            </button>}
+            <button onClick={()=>onOpenView(r)}
+              style={{padding:"6px 14px",background:"#3B5998",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              📋 Open Workflow View
+            </button>
+          </>
+        )}
+        {isBuilder&&<button onClick={()=>handleToggle(r)} disabled={!!toggling[r.id]}
+          style={{padding:"6px 14px",background:r.config?.collab_enabled?"#A32D2D":"#2D6A4F",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,opacity:toggling[r.id]?0.5:1}}>
+          {toggling[r.id]?"...":(r.config?.collab_enabled?"Disable Collab":"Enable Collab")}
+        </button>}
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{padding:"20px 16px",maxWidth:900,margin:"0 auto"}}>
+      <div style={{fontSize:18,fontWeight:700,color:T.primary,marginBottom:6}}>🤝 Collaborative Workflow</div>
+      <div style={{fontSize:13,color:T.textMd,marginBottom:20,lineHeight:1.6}}>
+        Enable collab mode on any report to add input columns, open monthly cycles, and track approvals.
+      </div>
+      {collabReports.length>0&&(
+        <>
+          <div style={{fontSize:12,fontWeight:700,color:T.secondary,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Collab-Enabled Reports</div>
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+            {collabReports.map(r=><ReportCard key={r.id} r={r}/>)}
+          </div>
+        </>
+      )}
+      {isBuilder&&otherReports.length>0&&(
+        <>
+          <div style={{fontSize:12,fontWeight:700,color:T.textMd,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Standard Reports (collab disabled)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {otherReports.map(r=><ReportCard key={r.id} r={r}/>)}
+          </div>
+        </>
+      )}
+      {savedReports.length===0&&<div style={{color:T.textMd,fontSize:14,padding:"20px 0"}}>No reports yet. Create one in the Report Builder first.</div>}
+    </div>
+  );
+}
+
+// ── Field search wrapper for the Report Builder left-panel field list ─────────
+function FieldSearch({fields,numFields,fieldStatus,onToggle,onToggleType,onToggleCard}){
+  const [q,setQ]=useState("");
+  const vis=q.trim()?fields.filter(f=>f.toLowerCase().includes(q.toLowerCase())):fields;
+  return(
+    <>
+      {fields.length>8&&(
+        <input value={q} onChange={e=>setQ(e.target.value)}
+          placeholder={`Search ${fields.length} fields…`}
+          style={{padding:"5px 9px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:12,
+            background:T.bgStat,color:T.text,outline:"none",marginBottom:6,width:"100%",boxSizing:"border-box"}}/>
+      )}
+      {vis.map(f=>(
+        <FieldRow key={f} field={f} isNum={numFields.has(f)}
+          status={fieldStatus[f]||{}} onToggle={onToggle}
+          onToggleType={()=>onToggleType(f)} onToggleCard={()=>onToggleCard(f)}/>
+      ))}
+      {vis.length===0&&q&&<div style={{padding:"8px 4px",fontSize:11,color:T.textMd}}>No fields match "{q}"</div>}
+    </>
+  );
+}
+
+// ── Mini builder zone helpers (used by CollabSetupPanel) ─────────────────────
+function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove,onReorder}){
+  const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
+  const [dragIdx,setDragIdx]=useState(null);
+  const available=allFields.filter(f=>!fields.includes(f));
+  const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
+  return(
+    <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
+      <div style={{fontSize:11,fontWeight:700,color,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span>{label}</span>
+        <button onClick={()=>{setOpen(o=>!o);setQ("");}}
+          style={{fontSize:10,background:color,color:"#fff",border:"none",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>+ Add</button>
+      </div>
+      <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+        {fields.map((f,i)=>(
+          <span key={f} draggable
+            onDragStart={()=>setDragIdx(i)}
+            onDragOver={e=>e.preventDefault()}
+            onDrop={()=>{
+              if(dragIdx===null||dragIdx===i)return;
+              const n=[...fields];n.splice(dragIdx,1);n.splice(i,0,fields[dragIdx]);
+              onReorder&&onReorder(n);setDragIdx(null);
+            }}
+            onDragEnd={()=>setDragIdx(null)}
+            style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 8px",
+              background:dragIdx===i?"rgba(0,0,0,0.3)":color,color:"#fff",borderRadius:10,fontSize:11,
+              cursor:"grab",opacity:dragIdx===i?0.5:1,userSelect:"none"}}>
+            <span style={{fontSize:9,opacity:0.6,marginRight:1}}>⠿</span>
+            {f}
+            <button onClick={()=>onRemove(f)} style={{background:"none",border:"none",color:"rgba(255,255,255,0.8)",cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
+          </span>
+        ))}
+        {fields.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
+      </div>
+      {open&&(
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6}}>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={`Search ${available.length} fields…`}
+            style={{width:"100%",padding:"4px 8px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:11,
+              background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none",marginBottom:4}}/>
+          <div style={{maxHeight:130,overflowY:"auto"}}>
+            {visAvail.map(f=>(
+              <div key={f} onClick={()=>{onAdd(f);setOpen(false);setQ("");}}
+                style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+                onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                {f}
+              </div>
+            ))}
+            {visAvail.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>{q?"No matches":"All fields assigned"}</div>}
+          </div>
+          <button onClick={()=>{setOpen(false);setQ("");}}
+            style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
+            Close ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ValuesZoneEditor({label,color,hint,values,allFields,onAdd,onRemove,onAggChange,onReorder}){
+  const [open,setOpen]=useState(false);
+  const [q,setQ]=useState("");
+  const [dragIdx,setDragIdx]=useState(null);
+  const assigned=values.map(v=>v.field);
+  const available=allFields.filter(f=>!assigned.includes(f));
+  const visAvail=q.trim()?available.filter(f=>f.toLowerCase().includes(q.toLowerCase())):available;
+  const AGGS=["sum","count","avg","min","max"];
+  return(
+    <div style={{background:T.bgAlt,border:"1px solid "+T.border,borderRadius:8,padding:10,minHeight:80}}>
+      <div style={{fontSize:11,fontWeight:700,color,marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span>{label}</span>
+        <button onClick={()=>setOpen(o=>!o)}
+          style={{fontSize:10,background:color,color:"#fff",border:"none",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>+ Add</button>
+      </div>
+      <div style={{fontSize:10,color:T.textMd,marginBottom:6}}>{hint}</div>
+      <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {values.map((v,i)=>(
+          <div key={v.field} draggable
+            onDragStart={()=>setDragIdx(i)}
+            onDragOver={e=>e.preventDefault()}
+            onDrop={()=>{
+              if(dragIdx===null||dragIdx===i)return;
+              const n=[...values];n.splice(dragIdx,1);n.splice(i,0,values[dragIdx]);
+              onReorder&&onReorder(n);setDragIdx(null);
+            }}
+            onDragEnd={()=>setDragIdx(null)}
+            style={{display:"flex",alignItems:"center",gap:5,cursor:"grab",opacity:dragIdx===i?0.4:1}}>
+            <span style={{fontSize:9,color:T.textMd,flexShrink:0}}>⠿</span>
+            <span style={{flex:1,padding:"2px 8px",background:color,color:"#fff",borderRadius:10,fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.field}</span>
+            <select value={v.agg} onChange={e=>onAggChange(v.field,e.target.value)}
+              style={{fontSize:10,padding:"2px 4px",border:"1px solid "+T.border,borderRadius:4,background:T.bgCard,color:T.text}}>
+              {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+            </select>
+            <button onClick={()=>onRemove(v.field)}
+              style={{background:"none",border:"none",color:T.textMd,cursor:"pointer",fontSize:15,padding:0,lineHeight:1}}>×</button>
+          </div>
+        ))}
+        {values.length===0&&<span style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>Empty — click + Add</span>}
+      </div>
+      {open&&(
+        <div style={{marginTop:6,borderTop:"1px solid "+T.border,paddingTop:6}}>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder={`Search ${available.length} fields…`}
+            style={{width:"100%",padding:"4px 8px",border:"0.5px solid "+T.border,borderRadius:5,fontSize:11,
+              background:T.bgCard,color:T.text,boxSizing:"border-box",outline:"none",marginBottom:4}}/>
+          <div style={{maxHeight:130,overflowY:"auto"}}>
+            {visAvail.map(f=>(
+              <div key={f} onClick={()=>{onAdd(f);setOpen(false);setQ("");}}
+                style={{padding:"4px 6px",fontSize:11,cursor:"pointer",borderRadius:4,color:T.text,userSelect:"none"}}
+                onMouseEnter={e=>e.currentTarget.style.background=T.bgCard}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                {f}
+              </div>
+            ))}
+            {visAvail.length===0&&<div style={{fontSize:11,color:T.textMd,padding:"4px 6px"}}>{q?"No matches":"All fields assigned"}</div>}
+          </div>
+          <button onClick={()=>{setOpen(false);setQ("");}}
+            style={{width:"100%",marginTop:4,padding:"3px 0",fontSize:10,background:"none",border:"none",cursor:"pointer",color:T.textMd,borderTop:"1px solid "+T.border}}>
+            Close ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Phase 3: Collab Setup Panel (modal) ───────────────────────────────────────
+// Builder configures collab columns, row key, and manages cycles
+function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
+  const [columns,setColumns]=useState([]);
+  const [cycles,setCycles]=useState([]);
+  const [allUsers,setAllUsers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [editingCol,setEditingCol]=useState(null); // null | 'new' | {existing col}
+  const [newCycleLabel,setNewCycleLabel]=useState("");
+  const [cycleHistViewers,setCycleHistViewers]=useState([]);
+  const [openingCycle,setOpeningCycle]=useState(false);
+  const [renamingCycle,setRenamingCycle]=useState(null); // {id, label} being renamed
+  const [deletingCycle,setDeletingCycle]=useState(null); // cycleId being deleted
+  const [colDragIdx,setColDragIdx]=useState(null);       // drag-and-drop index for collab columns
+  const [dataFields,setDataFields]=useState([]);
+  const _setupCfg=typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{});
+  const [viewRows,setViewRows]=useState(_setupCfg.collab_rows||((_setupCfg.collab_row_key)?[_setupCfg.collab_row_key]:[]));
+  const [viewCols,setViewCols]=useState(_setupCfg.collab_cols||[]);
+  const [viewValues,setViewValues]=useState(_setupCfg.collab_values||(Array.isArray(_setupCfg.collab_display_fields)?_setupCfg.collab_display_fields:[]).map(f=>({field:f,agg:"sum"})));
+  const [viewFilters,setViewFilters]=useState(_setupCfg.collab_filters||[]);
+  const [savingView,setSavingView]=useState(false);
+
+  // ColForm state
+  const blankForm={label:"",col_type:"input",inputter_ids:[],reviewer_ids:[],validation_config:null};
+  const [colForm,setColForm]=useState(blankForm);
+
+  useEffect(()=>{
+    (async()=>{
+      // Each call is independent — one failure never blocks others
+
+      // 1. Collab columns
+      try{
+        const cols=await getCollabColumns(report.id);
+        setColumns(cols);
+      }catch(e){console.warn("collab columns load error:",e.message);}
+
+      // 2. Cycles
+      try{
+        const cycs=await getCollabCycles(report.id);
+        setCycles(cycs);
+      }catch(e){}
+
+      // 3. Users for inputter/reviewer assignment (silent fail — form still usable)
+      try{
+        const users=await getUsers();
+        if(Array.isArray(users))setAllUsers(users);
+      }catch(e){}
+
+      // 4. Field names — lightweight endpoint first, then full data fallback
+      try{
+        const fields=await getReportFields(report.id);
+        if(Array.isArray(fields)&&fields.length>0){setDataFields(fields);}
+        else throw new Error("empty");
+      }catch(e){
+        try{
+          const rd=await getReportData(report.id);
+          const fields=rd.fields?.length?rd.fields
+                       :rd.rows?.length?Object.keys(rd.rows[0])
+                       :[];
+          if(fields.length>0)setDataFields(fields);
+        }catch(e2){}
+      }
+
+      setLoading(false);
+    })();
+  },[report.id]);
+
+  const saveViewConfig=async()=>{
+    setSavingView(true);
+    try{
+      const newCfg={...(report.config||{}),
+        collab_rows:viewRows, collab_cols:viewCols,
+        collab_values:viewValues, collab_filters:viewFilters,
+        collab_row_key:viewRows[0]||null,             // backward compat
+        collab_display_fields:viewValues.map(v=>v.field), // backward compat
+      };
+      await updateReportConfig(report.id,newCfg,report.name);
+      setMsg("✓ View config saved");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSavingView(false);
+  };
+
+  const openCycle=async()=>{
+    if(!newCycleLabel.trim())return setMsg("Period label required (e.g. May 2026)");
+    setOpeningCycle(true);
+    try{
+      const c=await openCollabCycle(report.id,newCycleLabel.trim(),cycleHistViewers);
+      setCycles(prev=>[c,...prev]);setNewCycleLabel("");setCycleHistViewers([]);
+      setMsg("✓ Cycle opened: "+c.period_label);
+    }catch(e){setMsg("Error: "+e.message);}
+    setOpeningCycle(false);
+  };
+
+  const closeCycle=async(cycleId)=>{
+    if(!window.confirm("Close this cycle? All values will be frozen and it will move to History."))return;
+    setSaving(true);
+    try{
+      const c=await closeCollabCycle(report.id,cycleId);
+      setCycles(prev=>prev.map(x=>x.id===c.id?c:x));
+      setMsg("✓ Cycle closed");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
+  const reopenCycle=async(cycleId)=>{
+    if(!window.confirm("Reopen this cycle? It will become active again and accept new values."))return;
+    setSaving(true);
+    try{
+      const c=await reopenCollabCycle(report.id,cycleId);
+      setCycles(prev=>prev.map(x=>x.id===c.id?c:x));
+      setMsg("✓ Cycle reopened");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
+  const saveCol=async()=>{
+    if(!colForm.label.trim())return setMsg("Column label required");
+    setSaving(true);
+    try{
+      const vc=colForm.validation_config;
+      const normVc=vc?.field?{field:vc.field,rule:vc.rule||"lte",...(vc.rule==="pct"?{pct_max:vc.pct_max||100}:{})}:null;
+      const payload={...colForm,validation_config:normVc,ref_column:null,col_order:columns.length};
+      let saved;
+      if(editingCol&&editingCol.id){
+        saved=await updateCollabColumn(report.id,editingCol.id,payload);
+        setColumns(prev=>prev.map(c=>c.id===saved.id?saved:c));
+      }else{
+        saved=await createCollabColumn(report.id,payload);
+        setColumns(prev=>[...prev,saved]);
+      }
+      setEditingCol(null);setColForm(blankForm);setMsg("✓ Column saved");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
+  const deleteCol=async(colId)=>{
+    if(!window.confirm("Delete this column? All values for this column will be lost."))return;
+    try{
+      await deleteCollabColumn(report.id,colId);
+      setColumns(prev=>prev.filter(c=>c.id!==colId));
+      setMsg("✓ Column deleted");
+    }catch(e){setMsg("Error: "+e.message);}
+  };
+
+  const openEdit=(col)=>{
+    setEditingCol(col);
+    setColForm({
+      label:col.label,col_type:col.col_type,
+      inputter_ids:Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]'),
+      reviewer_ids:Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]'),
+      validation_config:col.validation_config||(col.validation_config===null?null:null),
+    });
+  };
+
+  // dataFields loaded via getReportFields in useEffect above
+  const statusColor={open:"#2D6A4F",closed:"#A32D2D"};
+
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",alignItems:"flex-start",justifyContent:"center",overflowY:"auto",padding:"20px 8px"}}>
+      <div style={{background:T.bgPage,borderRadius:14,width:"min(860px,98vw)",boxShadow:"0 16px 60px rgba(44,24,16,0.4)",marginBottom:20}}>
+        {/* Header */}
+        <div style={{background:T.bgHeader,borderRadius:"14px 14px 0 0",padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{color:T.textLt,fontWeight:700,fontSize:15}}>⚙ Workflow Setup</div>
+            <div style={{color:"rgba(245,239,230,0.7)",fontSize:12,marginTop:2}}>{report.name}</div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer",lineHeight:1}}>✕</button>
+        </div>
+
+        <div style={{padding:"20px"}}>
+          {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",border:"1px solid #A5D6A7",borderRadius:7,padding:"8px 14px",fontSize:13,marginBottom:16}}>{msg}</div>}
+          {loading&&<div style={{color:T.textMd,padding:20}}>Loading…</div>}
+
+          {/* ── View Configuration (Mini Report Builder) ── */}
+          {!loading&&(
+            <div style={{marginBottom:20,background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:16}}>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:4}}>📐 View Configuration</div>
+              <div style={{fontSize:12,color:T.textMd,marginBottom:14,lineHeight:1.5}}>
+                Configure how data appears in the Workflow View — same field zones as the Report Builder.
+                The view always summarizes by <strong>Rows (R)</strong> with drill-down, shows <strong>Values (V)</strong> as reference columns,
+                and exposes <strong>Filters (F)</strong> as filter pills.
+              </div>
+
+              {/* All fields overview */}
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:600,color:T.textMd,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>
+                  All Fields ({dataFields.length})
+                </div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:5,padding:"8px 10px",background:T.bgAlt,borderRadius:7,border:"1px solid "+T.border,minHeight:36}}>
+                  {dataFields.map(f=>{
+                    const inR=viewRows.includes(f);
+                    const inC=viewCols.includes(f);
+                    const inV=viewValues.some(v=>v.field===f);
+                    const inF=viewFilters.includes(f);
+                    const zone=inR?"R":inC?"C":inV?"V":inF?"F":null;
+                    const zc={R:T.tagR,C:T.tagC,V:T.tagV,F:T.tagF};
+                    return(
+                      <span key={f} style={{padding:"2px 9px",borderRadius:11,fontSize:11,
+                        background:zone?zc[zone]:T.bgCard,color:zone?"#fff":T.text,
+                        border:"1px solid "+(zone?zc[zone]:T.border)}}>
+                        {zone&&<span style={{fontSize:9,fontWeight:700,marginRight:3,opacity:0.85}}>[{zone}]</span>}
+                        {f}
+                      </span>
+                    );
+                  })}
+                  {dataFields.length===0&&<span style={{fontSize:12,color:T.textMd}}>⚠ No fields — upload data first</span>}
+                </div>
+              </div>
+
+              {/* Zone editors */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+                <ZoneEditor label="🏷 Rows (R)" color={T.tagR}
+                  hint="Field(s) that identify each row — e.g. Vendor Name. Drag pills to reorder."
+                  fields={viewRows} allFields={dataFields}
+                  onAdd={f=>{if(!viewRows.includes(f))setViewRows(r=>[...r,f]);}}
+                  onRemove={f=>setViewRows(r=>r.filter(x=>x!==f))}
+                  onReorder={setViewRows}/>
+
+                <ValuesZoneEditor label="📊 Values (V)" color={T.tagV}
+                  hint="Numeric reference columns — drag to reorder."
+                  values={viewValues} allFields={dataFields}
+                  onAdd={f=>{if(!viewValues.some(v=>v.field===f))setViewValues(v=>[...v,{field:f,agg:"sum"}]);}}
+                  onRemove={f=>setViewValues(v=>v.filter(x=>x.field!==f))}
+                  onAggChange={(f,agg)=>setViewValues(v=>v.map(x=>x.field===f?{...x,agg}:x))}
+                  onReorder={setViewValues}/>
+
+                <ZoneEditor label="📋 Columns (C)" color={T.tagC}
+                  hint="Optional: column grouping field (cross-tab like builder)."
+                  fields={viewCols} allFields={dataFields}
+                  onAdd={f=>{if(!viewCols.includes(f))setViewCols(c=>[...c,f]);}}
+                  onRemove={f=>setViewCols(c=>c.filter(x=>x!==f))}
+                  onReorder={setViewCols}/>
+
+                <ZoneEditor label="🔍 Filters (F)" color={T.tagF}
+                  hint="Fields exposed as filter pills in the Workflow View toolbar."
+                  fields={viewFilters} allFields={dataFields}
+                  onAdd={f=>{if(!viewFilters.includes(f))setViewFilters(v=>[...v,f]);}}
+                  onRemove={f=>setViewFilters(v=>v.filter(x=>x!==f))}
+                  onReorder={setViewFilters}/>
+              </div>
+
+              <button onClick={saveViewConfig} disabled={savingView}
+                style={{padding:"8px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontWeight:700,opacity:savingView?0.6:1}}>
+                {savingView?"Saving…":"Save View Config"}
+              </button>
+            </div>
+          )}
+
+          {/* ── Collab Columns ── */}
+          {!loading&&(
+            <div style={{marginBottom:24}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <div style={{fontWeight:700,color:T.primary,fontSize:14}}>Collaboration Columns</div>
+                {!editingCol&&<button onClick={()=>{setEditingCol('new');setColForm(blankForm);}}
+                  style={{padding:"6px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                  + Add Column
+                </button>}
+              </div>
+              {/* Column form */}
+              {editingCol&&(
+                <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:16,marginBottom:14}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                    <div>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Column Label *</label>
+                      <input value={colForm.label} onChange={e=>setColForm(f=>({...f,label:e.target.value}))}
+                        placeholder="e.g. Recommended Amount"
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,boxSizing:"border-box",marginTop:4}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Type</label>
+                      <select value={colForm.col_type} onChange={e=>setColForm(f=>({...f,col_type:e.target.value}))}
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,marginTop:4}}>
+                        <option value="input">Input Only (no approval)</option>
+                        <option value="workflow">Workflow (submit → approve/reject/hold)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <UserMultiSelect label="Inputters (who can enter values)" value={colForm.inputter_ids}
+                    allUsers={allUsers} onChange={v=>setColForm(f=>({...f,inputter_ids:v}))}/>
+                  {colForm.col_type==="workflow"&&(
+                    <div style={{marginTop:10}}>
+                      <UserMultiSelect label="Reviewers (who can approve/reject/hold)" value={colForm.reviewer_ids}
+                        allUsers={allUsers} onChange={v=>setColForm(f=>({...f,reviewer_ids:v}))}/>
+                    </div>
+                  )}
+                  {/* ── Validation Rule ── */}
+                  <div style={{marginTop:14,padding:"12px 14px",background:T.bgAlt,borderRadius:8,border:"1px solid "+T.border}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.textMd,marginBottom:8}}>🔒 Input Validation (optional)</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"end"}}>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Reference Field (from report data)</label>
+                        <select value={colForm.validation_config?.field||""}
+                          onChange={e=>setColForm(f=>({...f,validation_config:e.target.value?{field:e.target.value,rule:f.validation_config?.rule||"lte",...(f.validation_config?.pct_max?{pct_max:f.validation_config.pct_max}:{})}:null}))}
+                          style={{width:"100%",padding:"6px 9px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,marginTop:3}}>
+                          <option value="">— No validation —</option>
+                          {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Rule</label>
+                        <select value={colForm.validation_config?.rule||"lte"}
+                          onChange={e=>setColForm(f=>({...f,validation_config:f.validation_config?{...f.validation_config,rule:e.target.value}:null}))}
+                          disabled={!colForm.validation_config?.field}
+                          style={{width:"100%",padding:"6px 9px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,marginTop:3}}>
+                          <option value="lte">≤ Cannot exceed (max)</option>
+                          <option value="gte">≥ Cannot be less than (min)</option>
+                          <option value="pct">% Percentage of field</option>
+                        </select>
+                      </div>
+                    </div>
+                    {colForm.validation_config?.field&&colForm.validation_config?.rule==="pct"&&(
+                      <div style={{marginTop:8}}>
+                        <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Max % allowed</label>
+                        <input type="number" value={colForm.validation_config?.pct_max||100}
+                          onChange={e=>setColForm(f=>({...f,validation_config:{...f.validation_config,pct_max:parseFloat(e.target.value)||100}}))}
+                          style={{padding:"5px 8px",border:"1px solid "+T.border,borderRadius:5,fontSize:12,width:80,marginLeft:8}}/>
+                        <span style={{fontSize:11,color:T.textMd,marginLeft:4}}>% of the reference field value</span>
+                      </div>
+                    )}
+                    {colForm.validation_config?.field&&(
+                      <div style={{fontSize:11,color:T.primary,marginTop:6}}>
+                        Preview: Input value must be
+                        {colForm.validation_config.rule==="lte"&&<strong> ≤ {colForm.validation_config.field}</strong>}
+                        {colForm.validation_config.rule==="gte"&&<strong> ≥ {colForm.validation_config.field}</strong>}
+                        {colForm.validation_config.rule==="pct"&&<strong> ≤ {colForm.validation_config.pct_max||100}% of {colForm.validation_config.field}</strong>}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+                    <button onClick={()=>{setEditingCol(null);setColForm(blankForm);}}
+                      style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>Cancel</button>
+                    <button onClick={saveCol} disabled={saving}
+                      style={{padding:"7px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:7,cursor:saving?"wait":"pointer",fontSize:12,fontWeight:700,opacity:saving?0.6:1}}>
+                      {saving?"Saving…":"Save Column"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {/* Column list — draggable to reorder */}
+              {columns.length===0&&!editingCol&&<div style={{color:T.textMd,fontSize:13,padding:"10px 0"}}>No collab columns defined yet.</div>}
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {columns.map((col,ci)=>(
+                  <div key={col.id} draggable
+                    onDragStart={()=>setColDragIdx(ci)}
+                    onDragOver={e=>e.preventDefault()}
+                    onDrop={async()=>{
+                      if(colDragIdx===null||colDragIdx===ci)return;
+                      const reordered=[...columns];
+                      reordered.splice(colDragIdx,1);reordered.splice(ci,0,columns[colDragIdx]);
+                      setColumns(reordered);setColDragIdx(null);
+                      // Persist new col_order
+                      try{await Promise.all(reordered.map((c,idx)=>updateCollabColumn(report.id,c.id,{...c,col_order:idx})));}
+                      catch(e){setMsg("Error saving order: "+e.message);}
+                    }}
+                    onDragEnd={()=>setColDragIdx(null)}
+                    style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 14px",
+                      display:"flex",alignItems:"center",gap:10,cursor:"grab",
+                      opacity:colDragIdx===ci?0.4:1,
+                      boxShadow:colDragIdx===ci?"inset 0 0 0 2px "+T.accent:"none"}}>
+                    <span style={{fontSize:14,color:T.textMd,flexShrink:0,cursor:"grab"}}>⠿</span>
+                    <div style={{flex:1}}>
+                      <span style={{fontWeight:600,fontSize:13,color:T.text}}>{col.label}</span>
+                      <span style={{marginLeft:8,fontSize:11,background:col.col_type==="workflow"?"#534AB7":"#185FA5",color:"#fff",padding:"2px 7px",borderRadius:10}}>
+                        {col.col_type==="workflow"?"Workflow":"Input Only"}
+                      </span>
+                    </div>
+                    <button onClick={()=>openEdit(col)} style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:11}}>Edit</button>
+                    <button onClick={()=>deleteCol(col.id)} style={{padding:"4px 10px",background:"none",border:"1px solid #A32D2D",color:"#A32D2D",borderRadius:6,cursor:"pointer",fontSize:11}}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Cycle Management ── */}
+          {!loading&&(
+            <div>
+              <div style={{fontWeight:700,color:T.primary,fontSize:14,marginBottom:12}}>Monthly Cycles</div>
+              {/* Open new cycle */}
+              <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14,marginBottom:14}}>
+                  <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:10}}>Open New Cycle</div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+                    <div style={{flex:1,minWidth:160}}>
+                      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>Period Label *</label>
+                      <input value={newCycleLabel} onChange={e=>setNewCycleLabel(e.target.value)}
+                        placeholder="e.g. May 2026"
+                        style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:13,boxSizing:"border-box",marginTop:4}}/>
+                    </div>
+                    <div style={{flex:2,minWidth:200}}>
+                      <UserMultiSelect label="History viewers (can see closed cycle)" value={cycleHistViewers}
+                        allUsers={allUsers} onChange={setCycleHistViewers}/>
+                    </div>
+                    <button onClick={openCycle} disabled={openingCycle}
+                      style={{padding:"8px 18px",background:T.accent,color:T.textLt,border:"none",borderRadius:7,cursor:openingCycle?"wait":"pointer",fontSize:13,fontWeight:700,height:36,marginBottom:0,opacity:openingCycle?0.6:1}}>
+                      {openingCycle?"Opening…":"Open Cycle"}
+                    </button>
+                  </div>
+                </div>
+              {/* Cycle list */}
+              {cycles.length===0&&<div style={{color:T.textMd,fontSize:13,padding:"8px 0"}}>No cycles yet.</div>}
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {cycles.map(c=>{
+                  const isRenaming=renamingCycle?.id===c.id;
+                  return(
+                  <div key={c.id} style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:8,padding:"10px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:statusColor[c.status]||T.textMd,flexShrink:0}}/>
+                    <div style={{flex:1,minWidth:160}}>
+                      {isRenaming?(
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          <input value={renamingCycle.label} autoFocus
+                            onChange={e=>setRenamingCycle(r=>({...r,label:e.target.value}))}
+                            onKeyDown={async e=>{
+                              if(e.key==="Enter"){
+                                try{const updated=await renameCollabCycle(report.id,c.id,renamingCycle.label);setCycles(prev=>prev.map(x=>x.id===updated.id?updated:x));setRenamingCycle(null);}catch(err){setMsg("Error: "+err.message);}
+                              } else if(e.key==="Escape") setRenamingCycle(null);
+                            }}
+                            style={{padding:"4px 8px",border:"1px solid "+T.accent,borderRadius:5,fontSize:13,fontWeight:600,color:T.text,background:T.bgCard,outline:"none",flex:1}}/>
+                          <button onClick={async()=>{
+                            try{const updated=await renameCollabCycle(report.id,c.id,renamingCycle.label);setCycles(prev=>prev.map(x=>x.id===updated.id?updated:x));setRenamingCycle(null);}catch(err){setMsg("Error: "+err.message);}
+                          }} style={{padding:"4px 10px",background:T.accent,color:T.textLt,border:"none",borderRadius:5,cursor:"pointer",fontSize:12,fontWeight:600}}>Save</button>
+                          <button onClick={()=>setRenamingCycle(null)} style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:12}}>Cancel</button>
+                        </div>
+                      ):(
+                        <>
+                          <span style={{fontWeight:600,fontSize:13,color:T.text}}>{c.period_label}</span>
+                          <span style={{marginLeft:8,fontSize:11,color:statusColor[c.status],fontWeight:600}}>{c.status.toUpperCase()}</span>
+                          {c.closed_at&&<span style={{marginLeft:8,fontSize:11,color:T.textMd}}>Closed {new Date(c.closed_at).toLocaleDateString()}</span>}
+                        </>
+                      )}
+                    </div>
+                    {!isRenaming&&(
+                      <button onClick={()=>setRenamingCycle({id:c.id,label:c.period_label})}
+                        style={{padding:"4px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:11,color:T.textMd}}>
+                        ✏ Rename
+                      </button>
+                    )}
+                    {c.status==="open"&&!isRenaming&&(
+                      <button onClick={()=>closeCycle(c.id)} disabled={saving}
+                        style={{padding:"5px 12px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                        Close Cycle
+                      </button>
+                    )}
+                    {c.status==="closed"&&!isRenaming&&(
+                      <button onClick={()=>reopenCycle(c.id)} disabled={saving}
+                        style={{padding:"5px 12px",background:T.success,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                        ↩ Reopen
+                      </button>
+                    )}
+                    {/* Super Admin only: delete a closed cycle */}
+                    {currentRole==="admin"&&c.status==="closed"&&!isRenaming&&(
+                      <button onClick={async()=>{
+                        if(!window.confirm(`Delete cycle "${c.period_label}"? All entered values will be permanently lost.`))return;
+                        setDeletingCycle(c.id);
+                        try{await deleteCollabCycle(report.id,c.id);setCycles(prev=>prev.filter(x=>x.id!==c.id));setMsg("✓ Cycle deleted");}
+                        catch(e){setMsg("Error: "+e.message);}
+                        setDeletingCycle(null);
+                      }} disabled={deletingCycle===c.id}
+                        style={{padding:"5px 12px",background:"none",border:"1px solid #A32D2D",color:"#A32D2D",borderRadius:7,cursor:"pointer",fontSize:12,opacity:deletingCycle===c.id?0.5:1}}>
+                        🗑 Delete
+                      </button>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Helper: multi-select user picker ──────────────────────────────────────────
+function UserMultiSelect({label,value=[],allUsers=[],onChange}) {
+  const safeValue=Array.isArray(value)?value:[];
+  const toggleUser=(id)=>{
+    if(safeValue.includes(id)) onChange(safeValue.filter(x=>x!==id));
+    else onChange([...safeValue,id]);
+  };
+  const eligible=Array.isArray(allUsers)?allUsers.filter(u=>u.role!=='admin'):[];
+  return(
+    <div>
+      <label style={{fontSize:12,fontWeight:600,color:T.textMd}}>{label}</label>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
+        {eligible.map(u=>(
+          <button key={u.id} onClick={()=>toggleUser(u.id)}
+            style={{padding:"4px 10px",borderRadius:14,fontSize:11,cursor:"pointer",fontWeight:safeValue.includes(u.id)?700:400,
+              background:safeValue.includes(u.id)?T.primary:"none",
+              color:safeValue.includes(u.id)?T.textLt:T.text,
+              border:"1px solid "+(safeValue.includes(u.id)?T.primary:T.border)}}>
+            {u.username} ({u.role})
+          </button>
+        ))}
+        {eligible.length===0&&<span style={{color:T.textMd,fontSize:12}}>No users available</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 3: Collab Data View (modal) ────────────────────────────────────────
+// Shows flat table of data rows + collab columns; inputters can enter values, reviewers can approve
+function CollabDataView({report,currentUser,currentRole,onClose}) {
+  const [columns,setColumns]=useState([]);
+  const [cycles,setCycles]=useState([]);
+  const [activeCycle,setActiveCycle]=useState(null);
+  const [values,setValues]=useState({});
+  const [dataRows,setDataRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState({});
+  const [draftMap,setDraftMap]=useState({});
+  const [auditRow,setAuditRow]=useState(null);
+  const [auditData,setAuditData]=useState([]);
+  const [reviewModal,setReviewModal]=useState(null);
+  const [reviewRemarks,setReviewRemarks]=useState("");
+  const [reviewValue,setReviewValue]=useState(""); // approver's editable value
+  const [msg,setMsg]=useState("");
+  const [histMode,setHistMode]=useState(false);
+  // Filter/sort/display state
+  const [search,setSearch]=useState("");
+  const [sortCol,setSortCol]=useState(null);
+  const [showNonZeroOnly,setShowNonZeroOnly]=useState(false);
+  const [numFmt,setNumFmt]=useState("units");
+  const [page,setPage]=useState(0);
+  const PAGE_SIZE=100;
+  const [colFilters,setColFilters]=useState({});      // {field: string[]|undefined} — pre-grouping
+  const [collabFilters,setCollabFilters]=useState({}); // {colId: string[]|undefined} — post-grouping on collab values
+  const [colSorts,setColSorts]=useState({});           // {field: 'az'|'za'|'09'|'90'}
+  const [expanded,setExpanded]=useState(new Set());   // level-1 group keys that are expanded (hierarchical mode)
+  const [drillDown,setDrillDown]=useState(null);      // {rowKey,colVal,rFs,cF,metricLabel} — raw record drill-down panel
+  const [focusedCell,setFocusedCell]=useState(null);  // dk key of the currently focused input cell
+  // Fresh config from API (overrides stale prop after Save View Config)
+  const [freshConfig,setFreshConfig]=useState(null);
+
+  // Determine user's roles in each column
+  const myId=currentUser?.id||getMyUserId(); // fallback: decode from JWT
+  const isBuilder=['admin','subadmin','subadmin_user'].includes(currentRole);
+
+  // Derive view config — prefer freshly-loaded config to avoid stale props
+  const _ac=freshConfig||(typeof report?.config==="string"?JSON.parse(report.config||"{}"):(report?.config||{}));
+  const viewRows=_ac.collab_rows||((_ac.collab_row_key)?[_ac.collab_row_key]:[]);
+  const viewValues=_ac.collab_values||(Array.isArray(_ac.collab_display_fields)?_ac.collab_display_fields:[]).map(f=>({field:f,agg:"sum"}));
+  const viewCols=_ac.collab_cols||[]; // C zone — cross-tab column field (first one used)
+  const cField=viewCols[0]||null;    // primary C field for cross-tab
+  const viewFilters=_ac.collab_filters||[];
+  const rowKey=viewRows[0]||null; // primary display field
+  const computeRK=(row,ri)=>viewRows.length===0?String(ri):viewRows.map(f=>String(row[f]||"")).join("||");
+  const numFieldsForFilter=useMemo(()=>new Set(viewValues.map(v=>v.field)),[viewValues]);
+  // All raw field names + numeric field detection for the DrillDown component
+  const allDataFields=useMemo(()=>dataRows.length?Object.keys(dataRows[0]).filter(k=>!k.startsWith("__")):[],[dataRows]);
+  const allNumFields=useMemo(()=>{
+    if(!dataRows.length)return new Set();
+    const first=dataRows[0];
+    return new Set(Object.keys(first).filter(k=>{const v=first[k];return typeof v==="number"||(v!==null&&v!==undefined&&v!==""&&!isNaN(Number(v)));}));
+  },[dataRows]);
+  // Unique C field values for cross-tab column headers
+  const cVals=useMemo(()=>{
+    if(!cField)return[];
+    return [...new Set(dataRows.map(r=>String(r[cField]||"")))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  },[cField,dataRows]);
+
+  useEffect(()=>{loadAll();},[report.id]);
+
+  const loadAll=async()=>{
+    setLoading(true);
+    try{
+      const [cols,cycs,rd]=await Promise.all([
+        getCollabColumns(report.id),
+        getCollabCycles(report.id),
+        getReportData(report.id)
+      ]);
+      setColumns(cols);
+      setCycles(cycs);
+      setDataRows(rd.rows||[]);
+      // Fetch fresh report config to get latest row key / display fields
+      try{
+        const fields=await getReportFields(report.id); // re-use existing endpoint
+        // Also get fresh config from reports list
+        const reports=await getReports();
+        const fresh=reports.find(r=>r.id===report.id);
+        if(fresh){
+          const cfg=typeof fresh.config==="string"?JSON.parse(fresh.config||"{}"):(fresh.config||{});
+          setFreshConfig(cfg);
+        }
+      }catch(e2){/* silent — fall back to prop */}
+      const open=cycs.find(c=>c.status==="open");
+      if(open){ setActiveCycle(open); await loadValues(open.id); }
+    }catch(e){setMsg("Error: "+e.message);}
+    setLoading(false);
+  };
+
+  const loadValues=async(cycleId)=>{
+    const vals=await getCollabValues(report.id,cycleId);
+    const map={};
+    vals.forEach(v=>{ map[v.row_key+"__"+v.col_id]=v; });
+    setValues(map);
+  };
+
+  const switchCycle=async(c)=>{
+    setActiveCycle(c);
+    setValues({});
+    setDraftMap({});
+    if(c){await loadValues(c.id);}
+  };
+
+  const draftKey=(rk,cid)=>rk+"__"+cid;
+  const autoSaveTimers=useRef({}); // debounce handles per cell
+
+  // Submit all pending workflow values across all rows (not just current page)
+  const submitAll=async()=>{
+    if(!activeCycle||activeCycle.status==="closed")return;
+    const pending=Object.values(values).filter(v=>
+      v.status==="pending"&&v.value!==null&&v.value!==undefined&&v.value!==""
+    ).map(v=>{
+      const col=columns.find(c=>c.id===v.col_id||c.id===parseInt(v.col_id));
+      return col&&col.col_type==="workflow"&&canInput(col)?{rk:v.row_key,col}:null;
+    }).filter(Boolean);
+    if(!pending.length){setMsg("No pending values to submit");setTimeout(()=>setMsg(""),2500);return;}
+    try{
+      await Promise.all(pending.map(({rk,col})=>submitCollabValue(report.id,activeCycle.id,rk,col.id)));
+      await loadValues(activeCycle.id);
+      setMsg(`✓ Submitted ${pending.length} value${pending.length!==1?"s":""} for review`);
+      setTimeout(()=>setMsg(""),3000);
+    }catch(e){setMsg("Error: "+e.message);}
+  };
+
+  const canInput=(col)=>{
+    if(isBuilder)return true;
+    const ids=Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]');
+    if(ids.length===0)return true; // no restriction — all authenticated users can input
+    return ids.includes(myId);
+  };
+  const canReview=(col)=>{
+    if(['admin','subadmin'].includes(currentRole))return true;
+    const ids=Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]');
+    return ids.includes(myId);
+  };
+
+  // Validate input value against the column's validation_config
+  const validateInput=(rk,col,val)=>{
+    const vc=col.validation_config;
+    if(!vc||!vc.field||!vc.rule)return null;
+    // Sum the reference field across ALL rows matching this row key (vendor summary level, not individual bill)
+    const matchingRows=dataRows.filter(r=>viewRows.map(f=>String(r[f]||"")).join("||")===rk||String(r[viewRows[0]]||"")===rk);
+    if(!matchingRows.length)return null;
+    const refVal=matchingRows.reduce((sum,r)=>sum+(parseFloat(r[vc.field])||0),0);
+    const inputVal=parseFloat(val)||0;
+    if(vc.rule==="lte"&&inputVal>refVal)
+      return `${col.label}: value (${inputVal.toLocaleString()}) cannot exceed ${vc.field} (${refVal.toLocaleString()})`;
+    if(vc.rule==="gte"&&inputVal<refVal)
+      return `${col.label}: value (${inputVal.toLocaleString()}) cannot be less than ${vc.field} (${refVal.toLocaleString()})`;
+    if(vc.rule==="pct"){const max=(vc.pct_max||100)/100*refVal;if(inputVal>max)return `${col.label}: value exceeds ${vc.pct_max||100}% of ${vc.field} (max: ${max.toLocaleString()})`;}
+    return null;
+  };
+
+  const saveDraft=async(rk,col)=>{
+    const dk=draftKey(rk,col.id);
+    const draft=draftMap[dk]||{};
+    const val=draft.value!==undefined?draft.value:null;
+    if(val===null||val==="")return;
+    const validationErr=validateInput(rk,col,val);
+    if(validationErr){
+      setMsg("⚠ "+validationErr);
+      setTimeout(()=>setMsg(""),4000);
+      // Revert the cell back to zero (clear the invalid draft)
+      setDraftMap(d=>{const nd={...d};delete nd[dk];return nd;});
+      return;
+    }
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      const saved=await upsertCollabValue(report.id,activeCycle.id,{row_key:rk,col_id:col.id,value:parseFloat(val)||0,remarks:null});
+      setValues(v=>({...v,[dk]:saved}));
+      // Only clear the draft if the user has NOT typed more digits since this save started.
+      // If they have (race: typed while API was in-flight), keep the newer draft so it gets saved by its own timer.
+      setDraftMap(d=>{
+        const cur=d[dk];
+        if(!cur||String(cur.value)===String(val)){const nd={...d};delete nd[dk];return nd;}
+        return d;
+      });
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const submitValue=async(rk,col)=>{
+    const dk=draftKey(rk,col.id);
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      const saved=await submitCollabValue(report.id,activeCycle.id,rk,col.id);
+      setValues(v=>({...v,[dk]:saved}));
+      setMsg("✓ Submitted for review");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const doReview=async(action)=>{
+    if(!reviewModal)return;
+    const {rowKey:rk,col_id}=reviewModal;
+    const dk=draftKey(rk,col_id);
+    setSaving(s=>({...s,[dk]:true}));
+    try{
+      // Pass modified_value only when action is 'modified'
+      const modVal=action==="modified"?parseFloat(reviewValue)||0:undefined;
+      const saved=await reviewCollabValue(report.id,activeCycle.id,rk,col_id,action,reviewRemarks||null,modVal);
+      setValues(v=>({...v,[dk]:saved}));
+      setReviewModal(null);setReviewRemarks("");setReviewValue("");
+      setMsg("✓ "+action.charAt(0).toUpperCase()+action.slice(1));setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(s=>({...s,[dk]:false}));
+  };
+
+  const openAudit=async(rk)=>{
+    setAuditRow(rk);
+    if(activeCycle){
+      const a=await getCollabAudit(report.id,activeCycle.id,rk);
+      setAuditData(a);
+    }
+  };
+
+  const statusBadge=(status)=>{
+    const map={
+      pending:  {bg:"#FFF3CD",color:"#856404"},
+      submitted:{bg:"#CCE5FF",color:"#004085"},
+      approved: {bg:"#D4EDDA",color:"#155724"},
+      rejected: {bg:"#F8D7DA",color:"#721C24"},
+      hold:     {bg:"#E2D9F3",color:"#4A2080"},
+      modified: {bg:"#FFE5B4",color:"#7A3E00"}, // amber — reviewer changed the value
+    };
+    const s=map[status]||{bg:T.bgAlt,color:T.textMd};
+    return<span style={{fontSize:10,fontWeight:700,background:s.bg,color:s.color,padding:"2px 6px",borderRadius:8,textTransform:"uppercase"}}>{status||"—"}</span>;
+  };
+
+  // Number formatter for display columns
+  const fmtNum=(v)=>{
+    if(v===null||v===undefined||v==="")return "—";
+    const n=Number(v);
+    if(isNaN(n))return String(v);
+    if(numFmt==="Cr") return (n/1e7).toLocaleString('en-IN',{maximumFractionDigits:2})+" Cr";
+    if(numFmt==="L")  return (n/1e5).toLocaleString('en-IN',{maximumFractionDigits:2})+" L";
+    return n.toLocaleString('en-IN',{maximumFractionDigits:2});
+  };
+
+  // Sort toggle
+  const toggleSort=(field)=>{
+    setSortCol(s=>{
+      const next=s&&s.field===field?{field,dir:s.dir==="asc"?"desc":"asc"}:{field,dir:"asc"};
+      return next;
+    });
+    setPage(0);
+  };
+
+  // Total Approval = sum of approved + modified amounts across all workflow cols for this row
+  const totalApprovalBadge=(wfCols,rk)=>{
+    if(!wfCols.length)return null;
+    const entries=wfCols.map(col=>values[rk+"__"+col.id]);
+    const approvedSum=entries.reduce((sum,v)=>{
+      if(v&&['approved','modified'].includes(v.status)){
+        const amt=v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0;
+        return sum+amt;
+      }
+      return sum;
+    },0);
+    const allDone=entries.every(v=>v&&['approved','modified','rejected'].includes(v.status));
+    const hasRejected=entries.some(v=>v?.status==='rejected');
+    const hasPending=entries.some(v=>!v||v.status==='pending');
+    const hasSubmitted=entries.some(v=>v?.status==='submitted');
+    const bg=allDone?(hasRejected?"#F8D7DA":"#D4EDDA"):hasSubmitted?"#CCE5FF":"#FFF3CD";
+    const clr=allDone?(hasRejected?"#721C24":"#155724"):hasSubmitted?"#004085":"#856404";
+    const label=fmtNum(approvedSum);
+    return<span style={{fontSize:12,fontWeight:700,background:bg,color:clr,padding:"3px 10px",borderRadius:8,whiteSpace:"nowrap"}}>{label}</span>;
+  };
+
+  // Filter chain
+  let filteredRows=dataRows;
+  if(search.trim()){
+    const q=search.trim().toLowerCase();
+    const flds=[...viewRows,...viewValues.map(v=>v.field)].filter(Boolean);
+    filteredRows=filteredRows.filter(r=>flds.some(f=>String(r[f]||"").toLowerCase().includes(q)));
+  }
+  const activeColFilters=Object.entries(colFilters).filter(([,v])=>Array.isArray(v)&&v.length>0);
+  if(activeColFilters.length){
+    filteredRows=filteredRows.filter(row=>activeColFilters.every(([f,vals])=>vals.includes(String(row[f]??""))));
+  }
+  if(showNonZeroOnly){
+    filteredRows=filteredRows.filter((row,ri)=>{
+      const rk=computeRK(row,ri);
+      return columns.some(col=>{const v=values[rk+"__"+col.id];return v&&Number(v.value)!==0;});
+    });
+  }
+  // Sort
+  if(sortCol){
+    filteredRows=[...filteredRows].sort((a,b)=>{
+      const av=a[sortCol.field],bv=b[sortCol.field];
+      const an=Number(av),bn=Number(bv);
+      const cmp=!isNaN(an)&&!isNaN(bn)?an-bn:String(av??"").localeCompare(String(bv??""),undefined,{numeric:true});
+      return sortCol.dir==="asc"?cmp:-cmp;
+    });
+  }
+  // Hierarchical pivot grouping — like Excel pivot table
+  // viewRows[0] = outer level (e.g. Project), viewRows[1+] = inner level (e.g. Vendor Name)
+  const aggGroup=(rows)=>{
+    const g={__rows:rows,__count:rows.length,__cGroups:{}};
+    viewValues.forEach(({field,agg})=>{ g[field]=doAgg(rows,field,agg); });
+    if(cField){
+      cVals.forEach(cv=>{
+        const cr=rows.filter(r=>String(r[cField]||"")===cv);
+        g.__cGroups[cv]={};
+        viewValues.forEach(({field,agg})=>{ g.__cGroups[cv][field]=cr.length>0?doAgg(cr,field,agg):null; });
+      });
+    }
+    return g;
+  };
+  let displayRows=filteredRows;
+  const isHierarchical=viewRows.length>=2;
+  if(viewRows.length===1){
+    // Single-level: each unique value of viewRows[0] is one row
+    const groups={};const order=[];
+    filteredRows.forEach((row,ri)=>{
+      const k=String(row[viewRows[0]]||"");
+      if(!groups[k]){groups[k]={...row,__rk:k,...aggGroup([row]),__level:1};order.push(k);}
+      else{groups[k].__rows.push(row);groups[k].__count++;}
+    });
+    order.forEach(k=>{ Object.assign(groups[k],aggGroup(groups[k].__rows)); });
+    displayRows=order.map(k=>groups[k]);
+  } else if(viewRows.length>=2){
+    // Two-level: viewRows[0] = outer, viewRows[1+] = inner
+    const L1={};const L1Order=[];
+    filteredRows.forEach((row)=>{
+      const k1=String(row[viewRows[0]]||"");
+      const innerKey=viewRows.slice(1).map(f=>String(row[f]||"")).join("||");
+      const rk2=k1+"||"+innerKey;
+      if(!L1[k1]){
+        L1[k1]={...row,__rk:k1,__rows:[],__count:0,__level:1,__cGroups:{},__inner:{},__innerOrder:[]};
+        L1Order.push(k1);
+      }
+      L1[k1].__rows.push(row);L1[k1].__count++;
+      if(!L1[k1].__inner[innerKey]){
+        L1[k1].__inner[innerKey]={...row,__rk:rk2,__rows:[],__count:0,__level:2,__cGroups:{}};
+        L1[k1].__innerOrder.push(innerKey);
+      }
+      L1[k1].__inner[innerKey].__rows.push(row);
+      L1[k1].__inner[innerKey].__count++;
+    });
+    L1Order.forEach(k1=>{
+      Object.assign(L1[k1],aggGroup(L1[k1].__rows));
+      // Preserve __inner and __innerOrder which aggGroup doesn't touch
+      L1[k1].__innerOrder.forEach(k2=>{
+        Object.assign(L1[k1].__inner[k2],aggGroup(L1[k1].__inner[k2].__rows));
+      });
+    });
+    displayRows=L1Order.map(k1=>L1[k1]);
+  }
+  // Post-grouping filter: collab column value filters
+  const activeCollabFilters=Object.entries(collabFilters).filter(([,v])=>Array.isArray(v)&&v.length>0);
+  if(activeCollabFilters.length){
+    displayRows=displayRows.filter((row,ri)=>{
+      const rk=row.__rk||computeRK(row,ri);
+      return activeCollabFilters.every(([colId,vals])=>{
+        const v=values[rk+"__"+colId];
+        const cell=v?.value!==undefined&&v.value!==null?String(v.value):"";
+        return vals.includes(cell);
+      });
+    });
+  }
+  const totalPages=Math.ceil(displayRows.length/PAGE_SIZE);
+  const pagedRows=displayRows.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
+
+  const cycleLabel=c=>c.period_label+(c.status==="closed"?" (Closed)":"");
+
+  // ── Excel download for workflow view ──
+  const downloadWorkflowExcel=async()=>{
+    if(!activeCycle)return;
+    try{
+      setMsg("Preparing download…");
+      const exp=await exportCollabCycle(report.id,activeCycle.id);
+      const {columns:cols,values:vals,dataRows:dRows}=exp;
+      // Build value map
+      const valMap={};vals.forEach(v=>{valMap[v.row_key+"__"+v.col_id]=v;});
+      // Build header row
+      const wfColsExp=cols.filter(c=>c.col_type==="workflow");
+      const header=[...viewRows,...viewValues.map(v=>v.field),...cols.map(c=>c.label),...wfColsExp.map(c=>"Approved — "+c.label),...wfColsExp.map(c=>"Status — "+c.label),"Total Approval"];
+      // Build data rows — one per unique row key
+      const rkMap={};
+      dRows.forEach(row=>{
+        const rk=viewRows.map(f=>String(row[f]||"")).join("||");
+        if(!rkMap[rk])rkMap[rk]={row,rk};
+      });
+      const effectiveAmt=(v)=>{
+        if(!v||!['approved','modified','rejected'].includes(v.status))return "";
+        if(v.status==='rejected')return 0;
+        return v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0;
+      };
+      const sheetRows=[header,...Object.values(rkMap).map(({row,rk})=>{
+        const wfCols=cols.filter(c=>c.col_type==="workflow");
+        const approvedSum=wfCols.reduce((s,col)=>{
+          const v=valMap[rk+"__"+col.id];
+          if(!v||!['approved','modified'].includes(v.status))return s;
+          return s+(v.reviewer_value!=null?parseFloat(v.reviewer_value)||0:parseFloat(v.value)||0);
+        },0);
+        return[
+          ...viewRows.map(f=>row[f]||""),
+          ...viewValues.map(({field})=>row[field]||0),
+          ...cols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.value??"";}),
+          ...wfCols.map(col=>effectiveAmt(valMap[rk+"__"+col.id])),
+          ...wfCols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.status||"";}),
+          approvedSum,
+        ];
+      })];
+      // Use XLSX if available
+      if(window.XLSX){
+        const ws=window.XLSX.utils.aoa_to_sheet(sheetRows);
+        const wb=window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb,ws,"Workflow");
+        window.XLSX.writeFile(wb,`${report.name}_${activeCycle.period_label}_workflow.xlsx`);
+      } else {
+        // Fallback CSV
+        const csv=sheetRows.map(r=>r.map(c=>String(c).includes(",")?`"${c}"`:c).join(",")).join("\n");
+        const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);
+        a.download=`${report.name}_${activeCycle.period_label}_workflow.csv`;a.click();
+      }
+      setMsg("✓ Downloaded");setTimeout(()=>setMsg(""),2000);
+    }catch(e){setMsg("Error: "+e.message);}
+  };
+
+  // ── Review modal derived values — computed at component scope so they're always reactive ──
+  const reviewOrigVal=reviewModal?parseFloat(String(reviewModal.currentVal||"0"))||0:0;
+  const reviewCurVal=parseFloat(reviewValue||"0")||0;
+  const reviewIsChanged=!!reviewModal&&(reviewCurVal!==reviewOrigVal);
+  const reviewIsZero=reviewIsChanged&&reviewCurVal===0;
+  const reviewCanModify=reviewIsChanged&&!reviewIsZero;
+  const reviewCanApprove=!reviewIsChanged;
+
+  // ── isOnlyReviewer: user is exclusively a reviewer (no inputter rights) ──
+  const isOnlyReviewer=!isBuilder&&columns.length>0&&columns.filter(c=>c.col_type==="workflow").every(col=>{
+    const iIds=Array.isArray(col.inputter_ids)?col.inputter_ids:JSON.parse(col.inputter_ids||'[]');
+    const rIds=Array.isArray(col.reviewer_ids)?col.reviewer_ids:JSON.parse(col.reviewer_ids||'[]');
+    return rIds.includes(myId)&&iIds.length>0&&!iIds.includes(myId);
+  });
+  const allCycles=[...cycles];
+
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:700,background:"rgba(44,24,16,0.55)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      {/* Header */}
+      <div style={{background:T.bgHeader,padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <div>
+          <div style={{color:T.textLt,fontWeight:700,fontSize:15}}>📋 Workflow View — {report.name}</div>
+          {activeCycle&&<div style={{color:"rgba(245,239,230,0.7)",fontSize:12,marginTop:2}}>
+            Cycle: <strong style={{color:T.textLt}}>{activeCycle.period_label}</strong>
+            <span style={{marginLeft:8,fontSize:11,color:activeCycle.status==="open"?"#88FFAA":"#FF9999",fontWeight:700}}>{activeCycle.status.toUpperCase()}</span>
+          </div>}
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {allCycles.length>1&&(
+            <select value={activeCycle?.id||""} onChange={e=>{const c=allCycles.find(x=>String(x.id)===e.target.value);switchCycle(c||null);}}
+              style={{padding:"5px 10px",borderRadius:6,border:"none",fontSize:12,background:"rgba(255,255,255,0.15)",color:T.textLt}}>
+              {allCycles.map(c=><option key={c.id} value={c.id} style={{background:T.bgHeader}}>{cycleLabel(c)}</option>)}
+            </select>
+          )}
+          {activeCycle&&(
+            <button onClick={downloadWorkflowExcel}
+              style={{padding:"5px 12px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
+              ⬇ Excel
+            </button>
+          )}
+          <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer"}}>✕</button>
+        </div>
+      </div>
+
+      {msg&&<div style={{background:"#E8F5E9",color:"#2D6A4F",padding:"6px 20px",fontSize:13,flexShrink:0}}>{msg}</div>}
+
+      {/* Filter toolbar */}
+      {!loading&&dataRows.length>0&&(
+        <div style={{background:T.bgAlt,borderBottom:"1px solid "+T.border,padding:"8px 14px",flexShrink:0}}>
+          {/* Row 1: Search + controls + pagination */}
+          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:viewFilters.length>0?8:0}}>
+            <input value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} placeholder="🔍 Search…"
+              style={{padding:"5px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,minWidth:180,flex:1,maxWidth:280,outline:"none"}}/>
+            <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,cursor:"pointer",color:T.textMd,whiteSpace:"nowrap"}}>
+              <input type="checkbox" checked={showNonZeroOnly} onChange={e=>{setShowNonZeroOnly(e.target.checked);setPage(0);}}/>
+              Has values only
+            </label>
+            <div style={{display:"flex",gap:0,border:"1px solid "+T.border,borderRadius:7,overflow:"hidden"}}>
+              {[{k:"units",l:"Units"},{k:"L",l:"Lakhs"},{k:"Cr",l:"Crores"}].map(f=>(
+                <button key={f.k} onClick={()=>setNumFmt(f.k)}
+                  style={{padding:"4px 10px",border:"none",background:numFmt===f.k?T.primary:T.bgCard,
+                    color:numFmt===f.k?T.textLt:T.textMd,cursor:"pointer",fontSize:11,fontWeight:numFmt===f.k?700:400}}>
+                  {f.l}
+                </button>
+              ))}
+            </div>
+            {/* Submit All button — only for inputters, hidden for pure reviewers */}
+            {activeCycle?.status==="open"&&columns.some(c=>c.col_type==="workflow")&&!isOnlyReviewer&&(
+              <button onClick={submitAll}
+                style={{padding:"5px 14px",background:"#185FA5",color:"#fff",border:"none",borderRadius:7,
+                  cursor:"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>
+                ✓ Submit All Pending
+              </button>
+            )}
+            <span style={{fontSize:11,color:T.textMd,marginLeft:"auto",whiteSpace:"nowrap"}}>
+              {displayRows.length.toLocaleString()} rows{totalPages>1&&` · Page ${page+1}/${totalPages}`}
+            </span>
+            {/* Smart pagination */}
+            {totalPages>1&&(
+              <div style={{display:"flex",gap:3,alignItems:"center",flexShrink:0}}>
+                <button disabled={page===0} onClick={()=>setPage(0)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>«</button>
+                <button disabled={page===0} onClick={()=>setPage(p=>p-1)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===0?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===0?0.4:1}}>‹</button>
+                {/* Page number pills — up to 5 visible */}
+                {Array.from({length:totalPages},(_,i)=>i)
+                  .filter(i=>Math.abs(i-page)<=2||i===0||i===totalPages-1)
+                  .reduce((acc,i,idx,arr)=>{
+                    if(idx>0&&i-arr[idx-1]>1)acc.push("…");
+                    acc.push(i);return acc;
+                  },[])
+                  .map((item,idx)=>item==="…"
+                    ?<span key={"e"+idx} style={{fontSize:11,color:T.textMd,padding:"0 2px"}}>…</span>
+                    :<button key={item} onClick={()=>setPage(item)}
+                      style={{padding:"3px 8px",border:"1px solid "+(item===page?T.primary:T.border),borderRadius:5,
+                        cursor:"pointer",fontSize:11,fontWeight:item===page?700:400,
+                        background:item===page?T.primary:T.bgCard,
+                        color:item===page?T.textLt:T.text,minWidth:28}}>
+                      {item+1}
+                    </button>
+                  )}
+                <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>›</button>
+                <button disabled={page===totalPages-1} onClick={()=>setPage(totalPages-1)}
+                  style={{padding:"3px 7px",border:"1px solid "+T.border,borderRadius:5,cursor:page===totalPages-1?"not-allowed":"pointer",fontSize:11,background:T.bgCard,opacity:page===totalPages-1?0.4:1}}>»</button>
+                {/* Direct page jump */}
+                <span style={{fontSize:11,color:T.textMd}}>Go:</span>
+                <input type="number" min={1} max={totalPages} defaultValue={page+1}
+                  key={page}
+                  onKeyDown={e=>{if(e.key==="Enter"){const v=parseInt(e.target.value)-1;if(v>=0&&v<totalPages)setPage(v);}}}
+                  onBlur={e=>{const v=parseInt(e.target.value)-1;if(v>=0&&v<totalPages)setPage(v);}}
+                  style={{width:40,padding:"3px 5px",border:"1px solid "+T.border,borderRadius:5,fontSize:11,textAlign:"center"}}/>
+              </div>
+            )}
+          </div>
+          {/* Row 2: Slicer filter pills (same as builder report) */}
+          {viewFilters.length>0&&(
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:11,fontWeight:600,color:T.textMd}}>Filters:</span>
+              {viewFilters.map(f=>(
+                <Slicer key={f} field={f} data={dataRows}
+                  active={colFilters[f]}
+                  onChange={v=>{ setColFilters(p=>({...p,[f]:v})); setPage(0); }}/>
+              ))}
+              {Object.values(colFilters).some(v=>v!==undefined&&v!==null)&&(
+                <button onClick={()=>{setColFilters({});setPage(0);}}
+                  style={{fontSize:11,padding:"5px 10px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",color:T.textMd}}>
+                  Clear all
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading&&<div style={{padding:30,color:T.textMd,fontSize:14,textAlign:"center"}}>⏳ Loading workflow data…</div>}
+
+      {!loading&&!activeCycle&&(
+        <div style={{padding:30,color:T.textMd,fontSize:14}}>
+          No open cycle found. Ask the report builder to open a cycle for this period.
+          {cycles.length>0&&<div style={{marginTop:8}}>You can still view past cycles using the dropdown above.</div>}
+        </div>
+      )}
+
+      {/* Main table */}
+      {!loading&&(activeCycle||cycles.length>0)&&columns.length>0&&(
+        <div style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
+                {/* Row label columns — with DrillColFilter (search, select-all, sort) */}
+                {viewRows.map((rf,i)=>(
+                  <th key={rf}
+                    style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,
+                      borderBottom:"2px solid "+T.border,minWidth:180,userSelect:"none",position:"relative",
+                      borderLeft:i>0?"1px solid "+T.border:"none"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span onClick={()=>toggleSort(rf)} style={{cursor:"pointer",flex:1,display:"flex",alignItems:"center",gap:3}}>
+                        {rf}
+                        <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===rf?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                      </span>
+                      <DrillColFilter field={rf} data={dataRows}
+                        active={colFilters[rf]}
+                        onChange={v=>{ setColFilters(p=>({...p,[rf]:v})); setPage(0); }}
+                        numFields={numFieldsForFilter}
+                        activeSort={colSorts[rf]}
+                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                    </div>
+                  </th>
+                ))}
+                {viewRows.length===0&&(
+                  <th style={{padding:"9px 14px",fontWeight:400,color:T.textMd,fontStyle:"italic",fontSize:11,borderBottom:"2px solid "+T.border}}>
+                    Row — set Rows (R) in ⚙ Setup
+                  </th>
+                )}
+                {/* C zone — text reference columns */}
+                {viewCols.map((cf,i)=>(
+                  <th key={cf}
+                    style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.tagC,
+                      borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",
+                      borderLeft:"1px solid "+T.border}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{flex:1}}>{cf}</span>
+                      <DrillColFilter field={cf} data={dataRows}
+                        active={colFilters[cf]}
+                        onChange={v=>{ setColFilters(p=>({...p,[cf]:v})); setPage(0); }}
+                        numFields={numFieldsForFilter}
+                        activeSort={colSorts[cf]}
+                        onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                    </div>
+                    <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>ref</div>
+                  </th>
+                ))}
+                {/* Separator before values */}
+                {viewValues.length>0&&<th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>}
+                {cField?(
+                  /* ── C zone: cross-tab column headers ── */
+                  <>
+                    {cVals.map(cv=>(
+                      viewValues.map(({field,agg},vi)=>(
+                        <th key={cv+"_"+field}
+                          style={{padding:"8px 10px",textAlign:"right",fontWeight:600,color:T.text,
+                            borderBottom:"2px solid "+T.border,minWidth:100,userSelect:"none",
+                            borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)"}}>
+                          <div style={{fontSize:10,color:T.tagC,fontWeight:700,marginBottom:2,textAlign:"center"}}>{cv}</div>
+                          <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:2}}>
+                            <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",fontSize:12}}>{field}</span>
+                          </div>
+                          <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                        </th>
+                      ))
+                    ))}
+                    {/* Total columns */}
+                    {viewValues.map(({field,agg},vi)=>(
+                      <th key={"tot_"+field}
+                        style={{padding:"8px 10px",textAlign:"right",fontWeight:700,color:T.text,
+                          borderBottom:"2px solid "+T.border,minWidth:100,
+                          borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",
+                          background:"rgba(92,45,26,0.04)"}}>
+                        <div style={{fontSize:10,color:T.textMd,fontWeight:700,marginBottom:2,textAlign:"center"}}>Total</div>
+                        <div style={{textAlign:"right"}}>{field}</div>
+                        <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                      </th>
+                    ))}
+                  </>
+                ):(
+                  /* ── No C zone: plain value columns ── */
+                  viewValues.map(({field,agg})=>(
+                    <th key={field}
+                      style={{padding:"9px 14px",textAlign:"right",fontWeight:600,color:T.text,
+                        borderBottom:"2px solid "+T.border,minWidth:120,userSelect:"none",position:"relative"}}>
+                      <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:3}}>
+                        <DrillColFilter field={field} data={dataRows}
+                          active={colFilters[field]}
+                          onChange={v=>{ setColFilters(p=>({...p,[field]:v})); setPage(0); }}
+                          numFields={numFieldsForFilter}
+                          activeSort={colSorts[field]}
+                          onSort={(f,d)=>{ setColSorts(s=>({...s,[f]:d})); setSortCol({field:f,dir:d==="za"||d==="90"?"desc":"asc"}); }}/>
+                        <span onClick={()=>toggleSort(field)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>
+                          {field}
+                          <span style={{fontSize:10,opacity:0.6}}>{sortCol?.field===field?(sortCol.dir==="asc"?"↑":"↓"):"⇅"}</span>
+                        </span>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd,textAlign:"right"}}>{agg}</div>
+                    </th>
+                  ))
+                )}
+                {/* Separator before collab */}
+                <th style={{width:0,padding:0,borderBottom:"2px solid "+T.border,borderRight:"2px solid "+T.borderDk}}/>
+                {/* Collab input columns — with DrillColFilter on collab values */}
+                {columns.map(col=>{
+                  const colData=displayRows.map((row,ri)=>{
+                    const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                    const v=values[rk+"__"+col.id];
+                    return{[col.id]:v?.value!==undefined&&v.value!==null?String(v.value):""};
+                  });
+                  return(
+                    <th key={col.id} style={{padding:"9px 14px",textAlign:"left",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:150}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{flex:1}}>{col.label}</span>
+                        <DrillColFilter field={col.id} data={colData}
+                          active={collabFilters[col.id]}
+                          onChange={v=>{ setCollabFilters(p=>({...p,[col.id]:v})); setPage(0); }}
+                          numFields={new Set()}
+                          activeSort={null} onSort={()=>{}}/>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>{col.col_type==="workflow"?"Workflow":"Input Only"}</div>
+                    </th>
+                  );
+                })}
+                {/* Auto-paired approval columns (one per workflow col) */}
+                {columns.filter(c=>c.col_type==="workflow").map(col=>{
+                  const statusData=displayRows.map((row,ri)=>{
+                    const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                    const v=values[rk+"__"+col.id];
+                    return{["appr_"+col.id]:v?.status||"pending"};
+                  });
+                  return(
+                    <th key={"appr_"+col.id} style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:"#534AB7",borderBottom:"2px solid "+T.border,minWidth:140,borderLeft:"1px solid "+T.border}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+                        <span>Approval — {col.label}</span>
+                        <DrillColFilter field={"appr_"+col.id} data={statusData}
+                          active={collabFilters["appr_"+col.id]}
+                          onChange={v=>{ setCollabFilters(p=>({...p,["appr_"+col.id]:v})); setPage(0); }}
+                          numFields={new Set()} activeSort={null} onSort={()=>{}}/>
+                      </div>
+                      <div style={{fontWeight:400,fontSize:10,color:T.textMd}}>per column</div>
+                    </th>
+                  );
+                })}
+                {/* Total Approval */}
+                {columns.some(c=>c.col_type==="workflow")&&(
+                  <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,minWidth:120,borderLeft:"2px solid "+T.borderDk}}>
+                    Total Approval
+                  </th>
+                )}
+                <th style={{padding:"9px 14px",textAlign:"center",fontWeight:600,color:T.text,borderBottom:"2px solid "+T.border,width:60}}>Trail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedRows.map((row,ri)=>{
+                const rowBg=ri%2===0?T.bgCard:T.bgAlt;
+                const rk=row.__rk||computeRK(row,page*PAGE_SIZE+ri);
+                const wfCols=columns.filter(c=>c.col_type==="workflow");
+                const isL1=isHierarchical&&row.__level===1;
+                const isL1Expanded=isL1&&expanded.has(rk);
+                const innerRows=isL1?(row.__innerOrder||[]).map(k2=>row.__inner[k2]):[];
+
+                // Reusable V cell renderer (flat or cross-tab)
+                const renderVCells=(r,bg)=>cField?(
+                  <>
+                    {cVals.map(cv=>viewValues.map(({field},vi)=>{
+                      const cv_val=r.__cGroups?.[cv]?.[field];
+                      return<td key={cv+"_"+field} style={{padding:"7px 10px",textAlign:"right",color:cv_val!=null?T.numColor:T.textMd,fontWeight:500,whiteSpace:"nowrap",background:bg,borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)"}}>
+                        {cv_val!=null?fmtNum(cv_val):"—"}</td>;
+                    }))}
+                    {viewValues.map(({field},vi)=><td key={"tot_"+field} style={{padding:"7px 10px",textAlign:"right",color:T.numColor,fontWeight:700,whiteSpace:"nowrap",borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",background:"rgba(92,45,26,0.04)"}}>{fmtNum(r[field])}</td>)}
+                  </>
+                ):viewValues.map(({field})=><td key={field} style={{padding:"8px 14px",textAlign:"right",color:T.numColor,fontWeight:500,background:bg,whiteSpace:"nowrap",opacity:0.9}}>{fmtNum(r[field])}</td>);
+
+                // Reusable collab input cells — auto-save on type (debounced), no remarks, no manual save button
+                const renderCollabCells=(cellRk)=>columns.map(col=>{
+                  const dk=draftKey(cellRk,col.id);
+                  const existing=values[dk];const draft=draftMap[dk];
+                  const rawVal=draft?.value!==undefined?String(draft.value):(existing?.value!==undefined?String(existing.value):"");
+                  const isFocused=focusedCell===dk;
+                  // Show Indian-formatted number when not focused; raw number when focused/editing
+                  const displayVal=isFocused||!rawVal?rawVal:(!isNaN(Number(rawVal))?Number(rawVal).toLocaleString('en-IN',{maximumFractionDigits:2}):rawVal);
+                  const isSav=saving[dk];const cycleClosed=activeCycle?.status==="closed";const canI=!cycleClosed&&canInput(col);
+                  const isDirty=draft?.value!==undefined;
+                  return<td key={col.id} style={{padding:"6px 14px",verticalAlign:"middle"}}>
+                    {canI?(
+                      <div style={{position:"relative",display:"inline-block"}}>
+                        <input type="text" inputMode="numeric" value={displayVal} placeholder="0"
+                          onFocus={(e)=>{
+                            setFocusedCell(dk);
+                            // Strip any formatting immediately so first keypress edits the raw number
+                            const clean=e.target.value.replace(/[^0-9.\-]/g,"");
+                            if(clean!==e.target.value)setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:clean||rawVal}}));
+                          }}
+                          onChange={e=>{
+                            const val=e.target.value.replace(/[^0-9.\-]/g,""); // allow digits, dot, minus only
+                            setDraftMap(d=>({...d,[dk]:{...(d[dk]||{}),value:val}}));
+                            // Auto-save 800ms after last keystroke
+                            if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
+                            autoSaveTimers.current[dk]=setTimeout(()=>saveDraft(cellRk,col),800);
+                          }}
+                          onBlur={()=>{
+                            setFocusedCell(null);
+                            // On Tab/blur: cancel timer and save immediately
+                            if(autoSaveTimers.current[dk])clearTimeout(autoSaveTimers.current[dk]);
+                            saveDraft(cellRk,col);
+                          }}
+                          disabled={isSav}
+                          style={{width:110,padding:"5px 9px",border:"1px solid "+(isDirty?"#C8922A":T.border),borderRadius:6,fontSize:13,
+                            background:isDirty?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                        {isSav&&<span style={{position:"absolute",right:-18,top:7,fontSize:10,color:T.textMd}}>…</span>}
+                      </div>
+                    ):(
+                      <span style={{fontSize:13,color:T.text,minWidth:60,display:"block",textAlign:"right",paddingRight:4}}>
+                        {existing?.value!==undefined&&existing.value!==null?fmtNum(existing.value):"—"}
+                      </span>
+                    )}
+                  </td>;
+                });
+
+                // Reusable approval cells — status badge + amount after action + Review button
+                const renderApprovalCells=(cellRk)=>wfCols.map(col=>{
+                  const dk=draftKey(cellRk,col.id);const existing=values[dk];
+                  const cycleClosed=activeCycle?.status==="closed";const canR=!cycleClosed&&canReview(col);
+                  const effectiveVal=existing?.reviewer_value!=null?existing.reviewer_value:existing?.value;
+                  const showAmt=existing&&['approved','modified','hold'].includes(existing.status)&&effectiveVal!=null;
+                  const rejAmt=existing?.status==='rejected';
+                  return<td key={"appr_"+col.id} style={{padding:"6px 14px",verticalAlign:"middle",textAlign:"center",borderLeft:"1px solid "+T.border}}>
+                    {existing?statusBadge(existing.status):<span style={{fontSize:11,color:T.textMd}}>—</span>}
+                    {/* Show the effective amount after action */}
+                    {showAmt&&<div style={{fontSize:12,fontWeight:600,color:T.numColor,marginTop:3}}>{fmtNum(effectiveVal)}</div>}
+                    {rejAmt&&<div style={{fontSize:12,color:T.textMd,marginTop:3}}>0</div>}
+                    {canR&&existing?.status==="submitted"&&(
+                      <button onClick={()=>{setReviewModal({rowKey:cellRk,col_id:col.id,colLabel:col.label,currentVal:existing.value});setReviewRemarks("");setReviewValue(String(existing.value??""));}}
+                        style={{marginTop:4,padding:"3px 10px",background:"#2D6A4F",color:"#fff",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600,display:"block",margin:"4px auto 0"}}>
+                        Review
+                      </button>
+                    )}
+                  </td>;
+                });
+
+                // Drill-down helper for a specific row grouping
+                const openDrill=(drillRfs,drillRowKey,label)=>setDrillDown({rowKey:drillRowKey,colVal:null,rFs:drillRfs,cF:null,metricLabel:label});
+                const vCellStyle=(bg,vi,extra)=>({padding:"8px 12px",textAlign:"right",color:T.numColor,fontWeight:500,
+                  background:bg,whiteSpace:"nowrap",cursor:"pointer",userSelect:"none",
+                  borderLeft:vi===0?"none":"none",...extra});
+                return(
+                  <React.Fragment key={rk}>
+                  {/* ── Main summary row (level-1 or single-level) ── */}
+                  <tr style={{background:isL1?T.bgStat:rowBg,borderBottom:"1px solid "+T.border}}>
+                    {/* Row label cells — NOT clickable */}
+                    {viewRows.map((rf,i)=>(
+                      <td key={rf} style={{padding:"8px 14px",fontWeight:600,color:T.text,
+                        maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                        borderLeft:i>0?"1px solid "+T.border:"none"}}
+                        title={String(row[rf]||"")}>
+                        {i===0&&isL1?(
+                          <span style={{display:"flex",alignItems:"center",gap:6}}>
+                            <button onClick={()=>setExpanded(s=>{const n=new Set(s);n.has(rk)?n.delete(rk):n.add(rk);return n;})}
+                              title={isL1Expanded?"Collapse":"Expand"}
+                              style={{background:isL1Expanded?T.primary:"none",border:"1px solid "+T.border,borderRadius:4,width:18,height:18,cursor:"pointer",
+                                fontSize:11,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
+                                color:isL1Expanded?T.textLt:T.primary,fontWeight:700}}>
+                              {isL1Expanded?"−":"+"}
+                            </button>
+                            <span>{row[rf]||rk}</span>
+                            <span style={{fontSize:10,color:T.textMd,fontWeight:400}}>({row.__count})</span>
+                          </span>
+                        ):(String(row[rf]||""))}
+                      </td>
+                    ))}
+                    {viewRows.length===0&&<td style={{padding:"8px 14px",color:T.textMd}}>{page*PAGE_SIZE+ri+1}</td>}
+                    {/* C zone cells */}
+                    {viewCols.map(cf=>(
+                      <td key={cf} style={{padding:"8px 14px",color:T.text,borderLeft:"1px solid "+T.border,
+                        maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                        title={String(row[cf]||"")}>{String(row[cf]||"—")}</td>
+                    ))}
+                    {/* Separator */}
+                    {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:isL1?T.bgStat:rowBg}}/>}
+                    {/* Value cells — CLICKABLE → drill-down into raw records */}
+                    {cField?(
+                      <>
+                        {cVals.map(cv=>viewValues.map(({field},vi)=>{
+                          const cv_val=row.__cGroups?.[cv]?.[field];
+                          return<td key={cv+"_"+field}
+                            onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field+" · "+cv)}
+                            style={{...vCellStyle(isL1?T.bgStat:rowBg,vi,{borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)",color:cv_val!=null?T.numColor:T.textMd})}}
+                            title="Click to see raw records">
+                            {cv_val!=null?fmtNum(cv_val):"—"}</td>;
+                        }))}
+                        {viewValues.map(({field},vi)=><td key={"tot_"+field}
+                          onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field+" (Total)")}
+                          style={{...vCellStyle("rgba(92,45,26,0.04)",vi,{borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",fontWeight:700})}}
+                          title="Click to see raw records">{fmtNum(row[field])}</td>)}
+                      </>
+                    ):(
+                      viewValues.map(({field})=><td key={field}
+                        onClick={()=>openDrill(isL1?[viewRows[0]]:viewRows,isL1?[String(row[viewRows[0]]||"")]:viewRows.map(f=>String(row[f]||"")),field)}
+                        style={{...vCellStyle(isL1?T.bgStat:rowBg,0,{})}}
+                        onMouseEnter={e=>e.currentTarget.style.background="rgba(92,45,26,0.08)"}
+                        onMouseLeave={e=>e.currentTarget.style.background=isL1?T.bgStat:rowBg}
+                        title="Click to see raw records">{fmtNum(row[field])}</td>)
+                    )}
+                    {/* Separator before collab */}
+                    <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:isL1?T.bgStat:rowBg}}/>
+                    {/* Collab inputs — ALWAYS on main rows (primary level), never on sub-rows */}
+                    {renderCollabCells(rk)}
+                    {renderApprovalCells(rk)}
+                    {columns.some(c=>c.col_type==="workflow")&&<td style={{padding:"8px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>{totalApprovalBadge(wfCols,rk)}</td>}
+                    <td style={{padding:"8px 14px",textAlign:"center"}}>
+                      <button onClick={()=>openAudit(rk)} title="View audit trail"
+                        style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
+                        🕵
+                      </button>
+                    </td>
+                  </tr>
+
+                  {/* ── Level-2 sub-rows (expand from level-1) — values only, NO collab inputs ── */}
+                  {isL1Expanded&&innerRows.map((inner,ii)=>{
+                    const innerRk=inner.__rk;
+                    const innerBg=ii%2===0?T.bgCard:T.bgAlt;
+                    return(
+                      <tr key={innerRk} style={{background:innerBg,borderBottom:"0.5px solid "+T.border}}>
+                        {/* Row label cells — indented, NOT clickable */}
+                        {viewRows.map((rf,i)=>(
+                          <td key={rf} style={{padding:"6px 14px 6px "+(i===0?32:14)+"px",
+                            color:i===0?T.textMd:T.text,fontWeight:i===0?400:500,fontSize:12,
+                            overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                            borderLeft:i>0?"1px solid "+T.border:"none"}}>
+                            {i===0&&<span style={{color:T.textMd,marginRight:3,fontSize:10}}>⤷</span>}
+                            {String(inner[rf]||"")}
+                          </td>
+                        ))}
+                        {viewCols.map(cf=><td key={cf} style={{padding:"6px 14px",fontSize:12,color:T.text,borderLeft:"1px solid "+T.border}}>{String(inner[cf]||"—")}</td>)}
+                        {/* Separator */}
+                        {viewValues.length>0&&<td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:innerBg}}/>}
+                        {/* Value cells — CLICKABLE → drill-down for this specific sub-group */}
+                        {cField?(
+                          <>
+                            {cVals.map(cv=>viewValues.map(({field},vi)=>{
+                              const cv_val=inner.__cGroups?.[cv]?.[field];
+                              return<td key={cv+"_"+field}
+                                onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field+" · "+cv)}
+                                style={{...vCellStyle(innerBg,vi,{borderLeft:vi===0?"2px solid "+T.border:"1px solid rgba(0,0,0,0.06)",color:cv_val!=null?T.numColor:T.textMd,fontSize:12})}}
+                                title="Click to see raw records">{cv_val!=null?fmtNum(cv_val):"—"}</td>;
+                            }))}
+                            {viewValues.map(({field},vi)=><td key={"tot_"+field}
+                              onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field)}
+                              style={{...vCellStyle("rgba(92,45,26,0.04)",vi,{borderLeft:vi===0?"2px solid "+T.borderDk:"1px solid rgba(0,0,0,0.08)",fontWeight:600,fontSize:12})}}
+                              title="Click to see raw records">{fmtNum(inner[field])}</td>)}
+                          </>
+                        ):(
+                          viewValues.map(({field})=><td key={field}
+                            onClick={()=>openDrill(viewRows,viewRows.map(f=>String(inner.__rows[0]?.[f]||"")),field)}
+                            style={{...vCellStyle(innerBg,0,{fontSize:12})}}
+                            onMouseEnter={e=>e.currentTarget.style.background="rgba(92,45,26,0.08)"}
+                            onMouseLeave={e=>e.currentTarget.style.background=innerBg}
+                            title="Click to see raw records">{fmtNum(inner[field])}</td>)
+                        )}
+                        {/* Separator — empty collab cells to keep alignment */}
+                        <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:innerBg}}/>
+                        {columns.map(col=><td key={col.id}/>)}
+                        {wfCols.map(col=><td key={"appr_"+col.id}/>)}
+                        {columns.some(c=>c.col_type==="workflow")&&<td/>}
+                        <td/>
+                      </tr>
+                    );
+                  })}
+                  </React.Fragment>
+                );
+              })}
+              {pagedRows.length===0&&(
+                <tr><td colSpan={viewRows.length+viewCols.length+viewValues.length+columns.length+columns.filter(c=>c.col_type==="workflow").length+3} style={{padding:20,color:T.textMd,textAlign:"center"}}>No data rows.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!loading&&columns.length===0&&(
+        <div style={{padding:30,color:T.textMd,fontSize:14}}>No collab columns defined yet. Use ⚙ Setup Columns & Cycle in the Workflow tab.</div>
+      )}
+
+      {/* ── Drill-Down — reuses the exact same DrillDown panel as the Report Builder ── */}
+      {drillDown&&(
+        <DrillDown
+          data={dataRows}
+          target={drillDown}
+          fields={allDataFields}
+          numFields={allNumFields}
+          onClose={()=>setDrillDown(null)}
+          numFmt={numFmt}
+          savedHiddenCols={[]}
+          savedColFmts={{}}
+          onSaveHiddenCols={null}
+          onSaveColFilters={null}
+          configValues={viewValues}
+          activeFilters={colFilters}
+        />
+      )}
+
+      {/* Review Modal — uses component-scope reviewIsChanged/reviewCanModify for reliable reactivity */}
+      {reviewModal&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"min(440px,92vw)",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.primary,marginBottom:14}}>Review: {reviewModal.colLabel}</div>
+
+            {/* Editable value — approver can modify */}
+            <div style={{marginBottom:14}}>
+              <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>
+                Submitted Value — modify if needed:
+              </label>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <input type="text" inputMode="numeric" value={reviewValue}
+                  onChange={e=>setReviewValue(e.target.value.replace(/[^0-9.\-]/g,""))}
+                  style={{flex:1,padding:"8px 12px",border:"2px solid "+(reviewIsChanged?"#C8922A":T.border),
+                    borderRadius:7,fontSize:15,fontWeight:600,color:T.text,
+                    background:reviewIsChanged?"#FFFDE7":T.bgCard,outline:"none"}}/>
+                {reviewIsChanged&&(
+                  <span style={{fontSize:11,color:"#7A3E00",fontWeight:600,whiteSpace:"nowrap"}}>
+                    {reviewIsZero?"→ Reject":"Was: "+reviewModal.currentVal}
+                  </span>
+                )}
+              </div>
+              {reviewCanModify&&<div style={{fontSize:11,color:"#7A3E00",marginTop:4}}>✏ Changed — will be saved as <strong>MODIFIED</strong></div>}
+              {reviewIsZero&&<div style={{fontSize:11,color:"#721C24",marginTop:4}}>⚠ Value is 0 — will be saved as <strong>REJECTED</strong></div>}
+            </div>
+
+            {/* Reviewer remarks */}
+            <div style={{marginBottom:16}}>
+              <label style={{fontSize:12,fontWeight:600,color:T.textMd,display:"block",marginBottom:4}}>Remarks (optional)</label>
+              <textarea value={reviewRemarks} onChange={e=>setReviewRemarks(e.target.value)}
+                rows={2} placeholder="Add remarks for inputter..."
+                style={{width:"100%",padding:"7px 10px",border:"1px solid "+T.border,borderRadius:7,fontSize:12,boxSizing:"border-box",resize:"vertical"}}/>
+            </div>
+
+            {/* Action buttons */}
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
+              <button onClick={()=>{setReviewModal(null);setReviewRemarks("");setReviewValue("");}}
+                style={{padding:"7px 14px",background:"none",border:"1px solid "+T.border,borderRadius:7,cursor:"pointer",fontSize:12}}>
+                Cancel
+              </button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("hold")}
+                style={{padding:"7px 14px",background:"#6B5B95",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                ⏸ Hold
+              </button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("rejected")}
+                style={{padding:"7px 14px",background:reviewIsZero?"#721C24":"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                  boxShadow:reviewIsZero?"0 0 0 3px rgba(163,45,45,0.4)":"none"}}>
+                ❌ Reject
+              </button>
+              {reviewCanModify&&(
+                <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("modified")}
+                  style={{padding:"7px 14px",background:"#8B4400",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600,
+                    boxShadow:"0 0 0 3px rgba(139,68,0,0.35)"}}>
+                  ✏ Modified
+                </button>
+              )}
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>doReview("approved")} disabled={!reviewCanApprove}
+                style={{padding:"7px 14px",background:reviewCanApprove?"#2D6A4F":"#ccc",color:"#fff",border:"none",borderRadius:7,
+                  cursor:reviewCanApprove?"pointer":"not-allowed",fontSize:12,fontWeight:700,opacity:reviewCanApprove?1:0.5}}>
+                ✅ Approve
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Trail Panel */}
+      {auditRow&&(
+        <div style={{position:"absolute",inset:0,zIndex:800,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:0,width:"min(600px,95vw)",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{background:T.bgHeader,borderRadius:"12px 12px 0 0",padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:T.textLt,fontWeight:700,fontSize:14}}>🕵 Audit Trail — {auditRow}</span>
+              <button onClick={()=>setAuditRow(null)} style={{background:"none",border:"none",color:T.textLt,fontSize:18,cursor:"pointer"}}>✕</button>
+            </div>
+            <div style={{overflowY:"auto",flex:1,padding:14}}>
+              {auditData.length===0&&<div style={{color:T.textMd,fontSize:13}}>No audit entries for this row.</div>}
+              {auditData.map(a=>(
+                <div key={a.id} style={{borderBottom:"1px solid "+T.border,padding:"8px 0",fontSize:12}}>
+                  <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontWeight:700,color:T.text}}>{a.username||"(deleted user)"}</span>
+                    <span style={{background:T.bgAlt,color:T.textMd,padding:"2px 7px",borderRadius:8,fontSize:10,textTransform:"uppercase"}}>{a.action}</span>
+                    {a.value!==null&&a.value!==undefined&&<span style={{color:T.numColor,fontWeight:600}}>{a.value}</span>}
+                    <span style={{color:T.textMd,marginLeft:"auto"}}>{new Date(a.created_at).toLocaleString()}</span>
+                  </div>
+                  {a.remarks&&<div style={{color:T.textMd,marginTop:3,fontStyle:"italic"}}>{a.remarks}</div>}
+                  {a.col_id&&<div style={{color:T.textMd,fontSize:11}}>Column ID: {a.col_id}</div>}
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -4024,9 +5843,10 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
 }
 
 // ── User view ──────────────────────────────────────────────────────────────────
-function UserView({onLogout,savedReports,onLoadReportData}) {
+function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRole}) {
   const isMobileView=useViewport();
   const [activeId,setActiveId]=useState(null);
+  const [collabViewReport,setCollabViewReport]=useState(null);
   const [dataLoading,setDataLoading]=useState(false);
   const [refreshing,setRefreshing]=useState(false); // background refresh (doesn't blank report)
   const [lastRefreshed,setLastRefreshed]=useState(null);
@@ -4209,7 +6029,7 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
     </div>
   );
 
-  return(
+  return(<>
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role="User" onLogout={onLogout}>
         {publishedReports.length>0&&(
@@ -4252,6 +6072,12 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
                 {currentData.rows.length.toLocaleString()} records · {currentData.fields.length} fields
                 {lastRefreshed&&<span style={{marginLeft:8,color:T.success}}>· Refreshed {lastRefreshed.toLocaleTimeString()}</span>}
               </div>
+              {currentMeta.config?.collab_enabled&&(
+                <button onClick={()=>setCollabViewReport(currentMeta)}
+                  style={{padding:"6px 14px",background:"#3B5998",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                  🤝 Workflow
+                </button>
+              )}
               {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
                 <button onClick={()=>refreshFromSource(false)} disabled={refreshing}
                   title="Pull latest data from Google Drive / OneDrive"
@@ -4331,7 +6157,8 @@ function UserView({onLogout,savedReports,onLoadReportData}) {
         </div>
       ):(!dataLoading&&<div style={{padding:40,textAlign:"center",fontSize:13,color:T.textMd}}>Select a report above.</div>)}
     </div>
-  );
+    {collabViewReport&&<CollabDataView report={collabViewReport} currentUser={currentUser} currentRole={currentRole||"user"} onClose={()=>setCollabViewReport(null)}/>}
+  </>);
 }
 
 
@@ -4657,7 +6484,7 @@ function Login({onLogin}) {
     setLoading(true);setErr("");
     try{
       const data=await apiLogin(username.trim(),password);
-      onLogin(data.role,data.username,data.token);
+      onLogin(data.role,data.username,data.token,data.id);
     }catch(e){
       const msg=e.message||"";
       if (isNetworkErr(msg))
@@ -4801,13 +6628,17 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishe
 // ── Root ───────────────────────────────────────────────────────────────────────
 // ── Helper: parse API report metadata into local shape ────────────────────────
 function parseReportMeta(r) {
+  const cfg = typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{});
+  // Merge top-level collab_enabled DB column into config so WorkflowListTab can read it
+  if (r.collab_enabled !== undefined) cfg.collab_enabled = !!r.collab_enabled;
   return {
     id: r.id,
     name: r.name,
     rows: r.row_count||0,
     fields: r.field_count||0,
+    row_count: r.row_count||0,
     savedAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
-    config: typeof r.config==="string" ? JSON.parse(r.config) : (r.config||{}),
+    config: cfg,
     cardFields: (()=>{const cf=typeof r.card_fields==="string"?JSON.parse(r.card_fields):(r.card_fields||[]);
       // Normalise: legacy data may have strings, new data has {field,agg} objects
       return cf.map(x=>typeof x==="string"?{field:x,agg:"sum"}:x);
@@ -4880,7 +6711,7 @@ export default function App() {
       return;
     }
 
-    setCurrentUser(username);
+    setCurrentUser({username, id: localStorage.getItem("rh_user_id")||null, role: localStorage.getItem("rh_role")});
     // Timeout: if API hangs for >8s, bail to login
     const timeout=setTimeout(clearAndShowLogin,8000);
     loadAllReports()
@@ -4963,11 +6794,12 @@ export default function App() {
   }
 
   // ── Login / Logout ─────────────────────────────────────────────────────────
-  async function doLogin(role,username,token) {
+  async function doLogin(role,username,token,id) {
     localStorage.setItem("rh_role",role);
     localStorage.setItem("rh_username",username);
     localStorage.setItem("rh_token",token);
-    setCurrentUser(username);
+    if(id) localStorage.setItem("rh_user_id",id);
+    setCurrentUser({username, id: id||localStorage.getItem("rh_user_id")||null, role});
     try {
       await loadAllReports();
       // subadmin uses the same AdminView as admin
@@ -4987,6 +6819,7 @@ export default function App() {
     localStorage.removeItem("rh_token");
     localStorage.removeItem("rh_role");
     localStorage.removeItem("rh_username");
+    localStorage.removeItem("rh_user_id");
     setCurrentUser(null);
     setSavedReports([]);
     setPublishedId(null);
@@ -5022,6 +6855,8 @@ export default function App() {
                 onLogout={doLogout}
                 savedReports={savedReports}
                 onLoadReportData={loadReportData}
+                currentUser={currentUser}
+                currentRole={localStorage.getItem("rh_role")||"user"}
                 isGuest={false}/>}
     </ErrorBoundary>
   );

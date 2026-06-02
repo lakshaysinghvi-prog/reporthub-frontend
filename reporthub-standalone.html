@@ -416,7 +416,7 @@ function exportExcel(result, config, numFmt) {
   rows.push(colHdr);
   // Data rows
   rowKeys.forEach(rk => {
-    const rkStr = rk.join(" ");
+    const rkStr = rk.join("\0");
     const row = [...rk];
     if (hasGroups) {
       colVals.forEach(cv => vals.forEach((_,vi) => row.push(((cells[rkStr]||{})[cv]||[])[vi]||0)));
