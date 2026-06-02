@@ -9,6 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png', 'icons/*.svg'],
       manifest: false, // we supply our own /public/manifest.json
+      // selfDestroying generates a SW that immediately unregisters itself and
+      // deletes all caches — clears out any stale cached bundles from old builds
+      selfDestroying: true,
       workbox: {
         // Only cache static icon assets — NOT html/js/css.
         // Vite gives JS/CSS content-hashed names so browser HTTP cache handles them.
