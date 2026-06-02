@@ -12,7 +12,7 @@ import { login as apiLogin, logout as apiLogout, getUsers, createUser, updatePas
          getRefreshSchedule, setRefreshSchedule,
          getReportFields,
          toggleCollab, getCollabColumns, createCollabColumn, updateCollabColumn, deleteCollabColumn,
-         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle, deleteCollabCycle,
+         getCollabCycles, openCollabCycle, closeCollabCycle, renameCollabCycle, deleteCollabCycle, reopenCollabCycle,
          exportCollabCycle,
          getCollabValues, upsertCollabValue, submitCollabValue, reviewCollabValue,
          getCollabAudit, getCollabHistory } from "./api.js";
@@ -4178,11 +4178,24 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
     setSaving(false);
   };
 
+  const reopenCycle=async(cycleId)=>{
+    if(!window.confirm("Reopen this cycle? It will become active again and accept new values."))return;
+    setSaving(true);
+    try{
+      const c=await reopenCollabCycle(report.id,cycleId);
+      setCycles(prev=>prev.map(x=>x.id===c.id?c:x));
+      setMsg("✓ Cycle reopened");
+    }catch(e){setMsg("Error: "+e.message);}
+    setSaving(false);
+  };
+
   const saveCol=async()=>{
     if(!colForm.label.trim())return setMsg("Column label required");
     setSaving(true);
     try{
-      const payload={...colForm,ref_column:null,col_order:columns.length};
+      const vc=colForm.validation_config;
+      const normVc=vc?.field?{field:vc.field,rule:vc.rule||"lte",...(vc.rule==="pct"?{pct_max:vc.pct_max||100}:{})}:null;
+      const payload={...colForm,validation_config:normVc,ref_column:null,col_order:columns.length};
       let saved;
       if(editingCol&&editingCol.id){
         saved=await updateCollabColumn(report.id,editingCol.id,payload);
@@ -4353,7 +4366,7 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                       <div>
                         <label style={{fontSize:11,fontWeight:600,color:T.textMd}}>Reference Field (from report data)</label>
                         <select value={colForm.validation_config?.field||""}
-                          onChange={e=>setColForm(f=>({...f,validation_config:e.target.value?{...f.validation_config,field:e.target.value}:null}))}
+                          onChange={e=>setColForm(f=>({...f,validation_config:e.target.value?{field:e.target.value,rule:f.validation_config?.rule||"lte",...(f.validation_config?.pct_max?{pct_max:f.validation_config.pct_max}:{})}:null}))}
                           style={{width:"100%",padding:"6px 9px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,marginTop:3}}>
                           <option value="">— No validation —</option>
                           {dataFields.map(f=><option key={f} value={f}>{f}</option>)}
@@ -4503,6 +4516,12 @@ function CollabSetupPanel({report,currentUser,currentRole,onClose}) {
                       <button onClick={()=>closeCycle(c.id)} disabled={saving}
                         style={{padding:"5px 12px",background:"#A32D2D",color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
                         Close Cycle
+                      </button>
+                    )}
+                    {c.status==="closed"&&!isRenaming&&!cycles.some(x=>x.status==="open")&&(
+                      <button onClick={()=>reopenCycle(c.id)} disabled={saving}
+                        style={{padding:"5px 12px",background:T.success,color:"#fff",border:"none",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                        ↩ Reopen
                       </button>
                     )}
                     {/* Super Admin only: delete a closed cycle */}
@@ -4809,7 +4828,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     const hasSubmitted=entries.some(v=>v?.status==='submitted');
     const bg=allDone?(hasRejected?"#F8D7DA":"#D4EDDA"):hasSubmitted?"#CCE5FF":"#FFF3CD";
     const clr=allDone?(hasRejected?"#721C24":"#155724"):hasSubmitted?"#004085":"#856404";
-    const label=hasPending?"—":fmtNum(approvedSum);
+    const label=fmtNum(approvedSum);
     return<span style={{fontSize:12,fontWeight:700,background:bg,color:clr,padding:"3px 10px",borderRadius:8,whiteSpace:"nowrap"}}>{label}</span>;
   };
 
@@ -4938,7 +4957,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           ...viewValues.map(({field})=>row[field]||0),
           ...cols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.value??"";}),
           ...wfCols.map(col=>{const v=valMap[rk+"__"+col.id];return v?.status||"";}),
-          approvedSum||"",
+          approvedSum,
         ];
       })];
       // Use XLSX if available

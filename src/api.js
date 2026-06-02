@@ -20,6 +20,10 @@ async function api(path, options = {}) {
     ...options,
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('rh_token');
+      throw new Error('Session expired. Please log in again.');
+    }
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `HTTP ${res.status}`);
   }
@@ -186,6 +190,9 @@ export const renameCollabCycle = (id, cycleId, label) =>
 
 export const deleteCollabCycle = (id, cycleId) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}`, { method: 'DELETE' });
+
+export const reopenCollabCycle = (id, cycleId) =>
+  api(`/api/reports/${id}/collab-cycles/${cycleId}/reopen`, { method: 'PATCH' });
 
 export const exportCollabCycle = (id, cycleId) =>
   api(`/api/reports/${id}/collab-cycles/${cycleId}/export`);
