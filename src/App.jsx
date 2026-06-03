@@ -3627,7 +3627,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           const updatedCfg={...(cfg||{}),sourceLinks:newLinks};
           try{
             await updateReportConfig(lk.reportId,updatedCfg);
-            await loadAllReports();
+            await onReloadReports();
             showToast("✓ URL link removed from "+r.name);
           }catch(e){showToast("Failed to remove link: "+e.message);}
         }}
@@ -3680,7 +3680,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 await updateReportConfig(lk.reportId, {...freshCfg, sourceLinks:sl});
               }
             } catch(e) { /* timestamp persist non-critical */ }
-            await loadAllReports(); // refresh sidebar
+            await onReloadReports(); // refresh sidebar
             showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
             // Provide actionable message for Microsoft/Google auth failures
