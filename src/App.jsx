@@ -2600,6 +2600,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const [sheetNames,setSheetNames]=useState([]);
   const [workbook,setWorkbook]=useState(null);
   const [rangeOverride,setRangeOverride]=useState(""); // manual cell range e.g. "A1:AM5000"
+  const [refreshingLinkUrl,setRefreshingLinkUrl]=useState(null); // URL currently being refreshed
   const [schema,setSchema]=useState([]);
   const [previewRows,setPreviewRows]=useState([]);
   const [allRows,setAllRows]=useState([]);
@@ -2878,9 +2879,24 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                     </div>
                   </div>
                   <div style={{display:"flex",flexDirection:"column",gap:5,flexShrink:0}}>
-                    <button onClick={()=>onQuickRefresh&&onQuickRefresh(lk)}
-                      style={{padding:"5px 14px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
-                      ↻ Refresh
+                    <button onClick={()=>{
+                        if(refreshingLinkUrl) return;
+                        setRefreshingLinkUrl(lk.url);
+                        Promise.resolve(onQuickRefresh&&onQuickRefresh(lk))
+                          .finally(()=>setRefreshingLinkUrl(null));
+                      }}
+                      disabled={!!refreshingLinkUrl}
+                      style={{padding:"5px 14px",minWidth:100,
+                        background:refreshingLinkUrl===lk.url?"#7a4a3a":T.primary,
+                        color:T.textLt,border:"none",borderRadius:6,
+                        cursor:refreshingLinkUrl?"not-allowed":"pointer",
+                        fontSize:12,fontWeight:600,whiteSpace:"nowrap",
+                        opacity:refreshingLinkUrl&&refreshingLinkUrl!==lk.url?0.4:1,
+                        display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                      {refreshingLinkUrl===lk.url
+                        ? <><span style={{display:"inline-block",
+                            animation:"spin 0.8s linear infinite",fontSize:14}}>⟳</span> Saving…</>
+                        : "↻ Refresh"}
                     </button>
                     {canDelete&&(
                       <button onClick={()=>{
@@ -3631,9 +3647,10 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,lk.rangeOverride||undefined);}
             // Build numFields from the target report's config
             const r=savedReports.find(x=>x.id===lk.reportId);
+            const rc=r?.config||{};
             const allValFields=r?[
-              ...(r.config.values||[]).map(v=>v.field),
-              ...((r.config.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field))),
+              ...(rc.values||[]).map(v=>v.field),
+              ...((rc.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field))),
             ]:[];
             const nfArr=[...new Set(allValFields.length
               ? allValFields
@@ -3643,9 +3660,10 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             await onDataRefresh({rows:result.rows,fields:freshFields,numFields:new Set(nfArr)},lk.reportId);
             // Update lastRefreshed timestamp AFTER data is saved — use fresh r from savedReports
             const rFresh = savedReports.find(x=>x.id===lk.reportId)||r;
+            const rFreshCfg = rFresh?.config || {};
             const ts = Date.now();
-            const newLinks=(rFresh.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-            const updatedCfg={...rFresh.config,sourceLinks:newLinks};
+            const newLinks=(rFreshCfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+            const updatedCfg={...rFreshCfg,sourceLinks:newLinks};
             // Save timestamp to DB (fire-and-forget)
             updateReportConfig(lk.reportId,updatedCfg).catch(()=>{});
             // Always update local config state with new timestamp
