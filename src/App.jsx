@@ -3361,10 +3361,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     // targetId = which saved report to update data for
     const r = savedReports.find(x=>x.id===targetId);
     if (!r) { showToast("Report not found."); return; }
-    setApiLoading(true);
+    // NOTE: caller (onQuickRefresh) already sets setApiLoading(true)
     try {
-      // Update in-place — preserves publish status and access assignments
-      const nfArr = [...(ds.numFields instanceof Set ? ds.numFields : new Set(ds.numFields||[]))];
       const id = await onSaveReport({
         name: r.name,
         dataset: {...ds, numFields: ds.numFields},
@@ -3372,27 +3370,15 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         cardFields: r.cardFields||[],
         updateId: targetId,
       });
-      // If this report was the one open in builder, update local state too
+      // Update builder dataset directly — no openSavedReport (causes race conditions)
+      // handleSaveReport already cleared dataCache + localStorage cache
       if (activeReportId === targetId || !activeReportId) {
         setDataset(prev=>({...prev,...ds}));
-        // Same as openSavedReport: initialize from Tab 0 when tabbed
-        const rtabs=r.config&&r.config.tabs;
-        if(rtabs&&rtabs.length>0&&rtabs[0]&&rtabs[0].config){
-          setConfig({...r.config,...rtabs[0].config,name:r.config.name,tabs:rtabs});
-          setCardFields(rtabs[0].cardFields||r.cardFields||[]);
-          setActiveTabIdx(0);
-        } else {
-          setConfig(r.config);
-          setCardFields(r.cardFields||[]);
-        }
         setActiveReportId(id);
       }
-      // Reload builder fresh from DB so dataset reflects what was just saved
-      await openSavedReport(id);
-      showToast("'"+r.name+"' updated — "+ds.rows.length.toLocaleString()+" rows saved.");
-      setTab("builder");
-    } catch(e) { showToast("Update failed: "+e.message); }
-    finally { setApiLoading(false); }
+      // Return id so caller can update timestamps
+      return id;
+    } catch(e) { throw e; } // let caller handle error + toast
   }
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
@@ -3653,16 +3639,18 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               ? allValFields
               : Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")
             )];
-            await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
-            // Persist lastRefreshed in the report's config so it survives page reload
-            if(r){
-              const newLinks=(r.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:Date.now()}:x);
-              const updatedCfg={...r.config,sourceLinks:newLinks};
-              // Save updated config to backend (fire-and-forget — data was already saved above)
-              try{await updateReportConfig(lk.reportId,updatedCfg);}catch(e){/* non-critical */}
-              setConfig(cfg=>({...cfg,sourceLinks:newLinks}));
-            }
-            showToast("✓ Data refreshed: "+lk.label);
+            const freshFields = result.fields||Object.keys(result.rows[0]||{});
+            await onDataRefresh({rows:result.rows,fields:freshFields,numFields:new Set(nfArr)},lk.reportId);
+            // Update lastRefreshed timestamp AFTER data is saved — use fresh r from savedReports
+            const rFresh = savedReports.find(x=>x.id===lk.reportId)||r;
+            const ts = Date.now();
+            const newLinks=(rFresh.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+            const updatedCfg={...rFresh.config,sourceLinks:newLinks};
+            // Save timestamp to DB (fire-and-forget)
+            updateReportConfig(lk.reportId,updatedCfg).catch(()=>{});
+            // Always update local config state with new timestamp
+            setConfig(cfg=>({...cfg,sourceLinks:(cfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x)}));
+            showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
             // Provide actionable message for Microsoft/Google auth failures
             const msg=e.message||"";
