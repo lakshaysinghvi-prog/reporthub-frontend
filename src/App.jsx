@@ -3387,7 +3387,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         }
         setActiveReportId(id);
       }
-      showToast("'"+r.name+"' data updated! Builder layout preserved.");
+      // Reload builder fresh from DB so dataset reflects what was just saved
+      await openSavedReport(id);
+      showToast("'"+r.name+"' updated — "+ds.rows.length.toLocaleString()+" rows saved.");
       setTab("builder");
     } catch(e) { showToast("Update failed: "+e.message); }
     finally { setApiLoading(false); }
@@ -6939,7 +6941,9 @@ export default function App() {
     } else {
       result=await createReport(payload);
     }
-    dataCache.current[result.id]={rows:dataset.rows,fields:dataset.fields,numFields:dataset.numFields};
+    // Clear ALL caches — force fresh DB read so User Preview sees new data
+    delete dataCache.current[result.id];
+    try { localStorage.removeItem('rh_data_'+result.id); } catch(e) {}
     await loadAllReports();
     return result.id;
   }
