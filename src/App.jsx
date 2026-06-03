@@ -2692,7 +2692,9 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
 
   // Strategy A: Browser fetch with credentials (session cookies)
   async function fetchBrowser(url, sheet) {
-    const resp = await fetch(url, { credentials: "include", redirect: "follow" });
+    // cache:"no-store" forces the browser to always hit the network, never serve a
+    // stale cached XLSX — critical for SharePoint where the file gets updated in-place.
+    const resp = await fetch(url, { credentials: "include", redirect: "follow", cache: "no-store" });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const ct = resp.headers.get("content-type") || "";
     if (ct.includes("text/html")) throw new Error("got-html");
@@ -3521,17 +3523,22 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           // Quick refresh: fetch data + update the linked report directly
           setApiLoading(true);
           try{
-            // Try browser first then backend proxy
+            // Try browser first then backend proxy.
+            // cache:"no-store" forces the browser to always hit the network so we
+            // never serve a stale cached XLSX when the SharePoint file was updated.
             let result;
             try{
-              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
+              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow",cache:"no-store"});
               if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true});result={rows,sheetNames:wb.SheetNames};}}}
             }catch(e){console.log("browser fetch failed:",e.message);}
             if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined);}
+            // Sanitize rows (trim column names, drop blank rows) so field names
+            // always match what the config stored (same as the initial upload path).
+            const {rows:cleanRows,fields:cleanFields}=sanitizeRows(result.rows);
             // Build numFields from the target report's config
             const r=savedReports.find(x=>x.id===lk.reportId);
-            const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(Object.keys(result.rows[0]||{}).filter(k=>!isNaN(parseFloat(result.rows[0][k])))))]:[...Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")];
-            await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
+            const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(cleanFields.filter(k=>!isNaN(parseFloat(cleanRows[0]?.[k])))))]:[...cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number")];
+            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr)},lk.reportId);
             // Persist lastRefreshed in the report's config so it survives page reload
             if(r){
               const newLinks=(r.config.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:Date.now()}:x);
