@@ -3381,10 +3381,13 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     if (!r) { showToast("Report not found."); return; }
     // NOTE: caller (onQuickRefresh) already sets setApiLoading(true)
     try {
+      // Use ds.config if provided (e.g. onQuickRefresh bakes in fresh lastRefreshed timestamp)
+      // so handleSaveReport writes it to DB in a single PUT — no separate updateReportConfig needed.
+      const saveConfig = ds.config || r.config || {};
       const id = await onSaveReport({
         name: r.name,
         dataset: {...ds, numFields: ds.numFields},
-        config: r.config||{},
+        config: saveConfig,
         cardFields: r.cardFields||[],
         updateId: targetId,
       });
@@ -3666,9 +3669,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               ? allValFields
               : cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number")
             )];
-            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr)},lk.reportId);
-   const ts = Date.now();
-            // Update config state with new timestamp
+            // Bake the new timestamp into the config BEFORE saving so
+            // handleSaveReport writes the fresh timestamp to the DB in one shot
+            // (avoids the race where a separate updateReportConfig call loses to onReloadReports).
+            const ts = Date.now();
+            const rCfg = r?.config||{};
+            const tsLinks = getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+            if (!tsLinks.find(x=>x.url===lk.url)) tsLinks.push({...lk,lastRefreshed:ts});
+            const freshConfig = {...rCfg, sourceLinks:tsLinks};
+            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId);
+            // Mirror the new timestamp into local config state so the UI updates instantly
             setConfig(cfg=>{
               if (!cfg) return cfg;
               const existing = getSourceLinks(cfg);
@@ -3676,11 +3686,6 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               if (!existing.find(x=>x.url===lk.url)) sl.push({...lk,lastRefreshed:ts});
               return {...cfg, sourceLinks:sl};
             });
-            // Persist timestamp to DB
-            const rCfg = r?.config||{};
-            const tsLinks = getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-            if (!tsLinks.find(x=>x.url===lk.url)) tsLinks.push({...lk,lastRefreshed:ts});
-            updateReportConfig(lk.reportId, {...rCfg, sourceLinks:tsLinks}).catch(()=>{});
             await onReloadReports();
             showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
