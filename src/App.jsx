@@ -3634,12 +3634,23 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             let result;
             try{
               const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
-              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
+              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){
+                      if(lk.rangeOverride&&lk.rangeOverride.trim()){
+                        try{window.XLSX.utils.decode_range(lk.rangeOverride);ws["!ref"]=lk.rangeOverride.trim().toUpperCase();}catch(e){}
+                      }
+                      const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
             }catch(e){console.log("browser fetch failed:",e.message);}
-            if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined);}
+            if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,lk.rangeOverride||undefined);}
             // Build numFields from the target report's config
             const r=savedReports.find(x=>x.id===lk.reportId);
-            const nfArr=r?[...new Set((r.config.values||[]).map(v=>v.field).concat(Object.keys(result.rows[0]||{}).filter(k=>!isNaN(parseFloat(result.rows[0][k])))))]:[...Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")];
+            const allValFields=r?[
+              ...(r.config.values||[]).map(v=>v.field),
+              ...((r.config.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field))),
+            ]:[];
+            const nfArr=[...new Set(allValFields.length
+              ? allValFields
+              : Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")
+            )];
             await onDataRefresh({rows:result.rows,fields:Object.keys(result.rows[0]||{}),numFields:new Set(nfArr)},lk.reportId);
             // Persist lastRefreshed in the report's config so it survives page reload
             if(r){
