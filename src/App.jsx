@@ -2593,7 +2593,7 @@ function OAuthPanel() {
 }
 
 
-function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh, onDeleteLink}) {
+function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedReports, savedLinks, onQuickRefresh, onDeleteLink, onUpdateLink}) {
   const [phase,setPhase]=useState("drop");
   const [dragOver,setDragOver]=useState(false);
   const [fileInfo,setFileInfo]=useState(null);
@@ -2601,6 +2601,8 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const [workbook,setWorkbook]=useState(null);
   const [rangeOverride,setRangeOverride]=useState(""); // manual cell range e.g. "A1:AM5000"
   const [refreshingLinkUrl,setRefreshingLinkUrl]=useState(null); // URL currently being refreshed
+  const [editingLink,setEditingLink]=useState(null);   // {origUrl, url, sheet} — inline edit state
+  const [confirmDeleteUrl,setConfirmDeleteUrl]=useState(null); // URL pending delete confirmation
   const [schema,setSchema]=useState([]);
   const [previewRows,setPreviewRows]=useState([]);
   const [allRows,setAllRows]=useState([]);
@@ -2855,62 +2857,115 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:0}}>
               {savedLinks.map((lk,idx)=>{
-                // Show delete only when the linked report has no other active source link
-                // (i.e. this is the only link — removing it leaves the report with static data)
                 const linkedReport = savedReports&&savedReports.find(r=>r.id===lk.reportId);
-                const reportLinkCount = linkedReport
-                  ? (linkedReport.config&&linkedReport.config.sourceLinks||[]).length
-                  : 0;
-                const canDelete = reportLinkCount <= 1; // only link, or report not found
+                const isEditing = editingLink&&editingLink.origUrl===lk.url&&editingLink.reportId===lk.reportId;
+                const isPendingDelete = confirmDeleteUrl===lk.url+"|"+lk.reportId;
                 return(
-                <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:idx<savedLinks.length-1?"0.5px solid "+T.border:"none",background:idx%2===0?T.bgCard:T.bgStat}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                      <span style={{fontWeight:600,fontSize:12,color:T.text}}>{lk.label}</span>
-                      {linkedReport&&<span style={{fontSize:10,color:T.textMd,background:T.bgStat,
-                        border:"1px solid "+T.border,borderRadius:4,padding:"1px 6px"}}>
-                        {linkedReport.name}
-                      </span>}
+                <div key={idx} style={{borderBottom:idx<savedLinks.length-1?"0.5px solid "+T.border:"none",background:idx%2===0?T.bgCard:T.bgStat}}>
+                  {/* ── Normal row ── */}
+                  {!isEditing&&!isPendingDelete&&(
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:600,fontSize:12,color:T.text}}>{lk.label}</span>
+                        {linkedReport&&<span style={{fontSize:10,color:T.textMd,background:T.bgStat,
+                          border:"1px solid "+T.border,borderRadius:4,padding:"1px 6px"}}>
+                          {linkedReport.name}
+                        </span>}
+                      </div>
+                      <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
+                      {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
+                      <div style={{fontSize:10,color:lk.lastRefreshed?T.success:T.textMd,marginTop:1}}>
+                        {lk.lastRefreshed
+                          ? "✓ Last refreshed: "+new Date(lk.lastRefreshed).toLocaleString()
+                          : "Not yet refreshed — click ↻ Refresh to pull latest data"}
+                      </div>
                     </div>
-                    <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
-                    {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
-                    <div style={{fontSize:10,color:lk.lastRefreshed?T.success:T.textMd,marginTop:1}}>
-                      {lk.lastRefreshed
-                        ? "✓ Last refreshed: "+new Date(lk.lastRefreshed).toLocaleString()
-                        : "Not yet refreshed — click ↻ Refresh to pull latest data"}
-                    </div>
-                  </div>
-                  <div style={{display:"flex",flexDirection:"column",gap:5,flexShrink:0}}>
-                    <button onClick={()=>{
-                        if(refreshingLinkUrl) return;
-                        setRefreshingLinkUrl(lk.url);
-                        Promise.resolve(onQuickRefresh&&onQuickRefresh(lk))
-                          .finally(()=>setRefreshingLinkUrl(null));
-                      }}
-                      disabled={!!refreshingLinkUrl}
-                      style={{padding:"5px 14px",minWidth:100,
-                        background:refreshingLinkUrl===lk.url?"#7a4a3a":T.primary,
-                        color:T.textLt,border:"none",borderRadius:6,
-                        cursor:refreshingLinkUrl?"not-allowed":"pointer",
-                        fontSize:12,fontWeight:600,whiteSpace:"nowrap",
-                        opacity:refreshingLinkUrl&&refreshingLinkUrl!==lk.url?0.4:1,
-                        display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
-                      {refreshingLinkUrl===lk.url
-                        ? <><span style={{display:"inline-block",
-                            animation:"spin 0.8s linear infinite",fontSize:14}}>⟳</span> Saving…</>
-                        : "↻ Refresh"}
-                    </button>
-                    {canDelete&&(
+                    <div style={{display:"flex",flexDirection:"column",gap:5,flexShrink:0}}>
                       <button onClick={()=>{
-                          if(!window.confirm("Remove this URL link from the report? The report will keep its current data but will no longer auto-refresh from this URL.")) return;
-                          onDeleteLink&&onDeleteLink(lk);
+                          if(refreshingLinkUrl) return;
+                          setRefreshingLinkUrl(lk.url);
+                          Promise.resolve(onQuickRefresh&&onQuickRefresh(lk))
+                            .finally(()=>setRefreshingLinkUrl(null));
                         }}
+                        disabled={!!refreshingLinkUrl}
+                        style={{padding:"5px 14px",minWidth:100,
+                          background:refreshingLinkUrl===lk.url?"#7a4a3a":T.primary,
+                          color:T.textLt,border:"none",borderRadius:6,
+                          cursor:refreshingLinkUrl?"not-allowed":"pointer",
+                          fontSize:12,fontWeight:600,whiteSpace:"nowrap",
+                          opacity:refreshingLinkUrl&&refreshingLinkUrl!==lk.url?0.4:1,
+                          display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                        {refreshingLinkUrl===lk.url
+                          ? <><span style={{display:"inline-block",animation:"spin 0.8s linear infinite",fontSize:14}}>⟳</span> Saving…</>
+                          : "↻ Refresh"}
+                      </button>
+                      <button onClick={()=>setEditingLink({origUrl:lk.url,reportId:lk.reportId,url:lk.url,sheet:lk.sheet||""})}
+                        style={{padding:"4px 10px",background:"none",border:"1px solid "+T.borderDk,
+                          borderRadius:6,cursor:"pointer",fontSize:11,color:T.primary,textAlign:"center"}}>
+                        ✏ Edit URL
+                      </button>
+                      <button onClick={()=>setConfirmDeleteUrl(lk.url+"|"+lk.reportId)}
                         style={{padding:"4px 10px",background:"none",border:"1px solid rgba(163,45,45,0.4)",
                           borderRadius:6,cursor:"pointer",fontSize:11,color:"#A32D2D",textAlign:"center"}}>
                         🗑 Remove
                       </button>
-                    )}
+                    </div>
                   </div>
+                  )}
+                  {/* ── Inline edit row ── */}
+                  {isEditing&&(
+                  <div style={{padding:"12px 16px",background:"rgba(92,45,26,0.04)",display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{fontWeight:600,fontSize:12,color:T.primary}}>Edit link for {linkedReport?.name||lk.label}</div>
+                    <input value={editingLink.url} onChange={e=>setEditingLink(el=>({...el,url:e.target.value}))}
+                      placeholder="SharePoint / OneDrive URL"
+                      style={{padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,
+                        background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+                    <input value={editingLink.sheet} onChange={e=>setEditingLink(el=>({...el,sheet:e.target.value}))}
+                      placeholder="Sheet name (optional)"
+                      style={{padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,
+                        background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={async()=>{
+                          if(!editingLink.url.trim()) return;
+                          const r2=savedReports.find(x=>x.id===editingLink.reportId);
+                          if(!r2){setEditingLink(null);return;}
+                          const cfg2=r2.config||{};
+                          const existing=getSourceLinks(cfg2);
+                          const updLinks=existing.some(x=>x.url===editingLink.origUrl)
+                            ? existing.map(x=>x.url===editingLink.origUrl
+                                ?{...x,url:editingLink.url.trim(),sheet:editingLink.sheet.trim()}
+                                :x)
+                            : [...existing,{url:editingLink.url.trim(),sheet:editingLink.sheet.trim(),label:r2.name,lastRefreshed:null}];
+                          await (onUpdateLink&&onUpdateLink({reportId:editingLink.reportId,updLinks,cfg:cfg2}));
+                          setEditingLink(null);
+                        }}
+                        style={{padding:"6px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
+                        Save
+                      </button>
+                      <button onClick={()=>setEditingLink(null)}
+                        style={{padding:"6px 14px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:12,color:T.text}}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                  )}
+                  {/* ── Inline delete confirm ── */}
+                  {isPendingDelete&&(
+                  <div style={{padding:"12px 16px",background:"rgba(163,45,45,0.05)",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                    <span style={{fontSize:12,color:T.danger,flex:1}}>Remove this URL link from <strong>{linkedReport?.name||lk.label}</strong>? The report keeps its current data but won't auto-refresh.</span>
+                    <div style={{display:"flex",gap:8,flexShrink:0}}>
+                      <button onClick={()=>{onDeleteLink&&onDeleteLink(lk);setConfirmDeleteUrl(null);}}
+                        style={{padding:"5px 16px",background:T.danger,color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:700}}>
+                        Yes, remove
+                      </button>
+                      <button onClick={()=>setConfirmDeleteUrl(null)}
+                        style={{padding:"5px 12px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:12,color:T.text}}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                  )}
                 </div>
                 );
               })}
@@ -3625,16 +3680,23 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         savedLinks={savedReports.flatMap(r=>getSourceLinks(r.config).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
         onDeleteLink={async(lk)=>{
           const r=savedReports.find(x=>x.id===lk.reportId);
-          if(!r) return;
-          // Remove this URL from the report's sourceLinks array
-          const cfg=r.config||{};
-          const newLinks=getSourceLinks(cfg).filter(x=>x.url!==lk.url);
-          const updatedCfg={...(cfg||{}),sourceLinks:newLinks};
+          if(!r){showToast("Report not found");return;}
           try{
-            await updateReportConfig(lk.reportId,updatedCfg);
+            const cfg=r.config||{};
+            const newLinks=getSourceLinks(cfg).filter(x=>x.url!==lk.url);
+            await updateReportConfig(lk.reportId,{...cfg,sourceLinks:newLinks});
             await onReloadReports();
             showToast("✓ URL link removed from "+r.name);
           }catch(e){showToast("Failed to remove link: "+e.message);}
+        }}
+        onUpdateLink={async({reportId,updLinks,cfg})=>{
+          const r=savedReports.find(x=>x.id===reportId);
+          if(!r){showToast("Report not found");return;}
+          try{
+            await updateReportConfig(reportId,{...cfg,sourceLinks:updLinks});
+            await onReloadReports();
+            showToast("✓ Link updated for "+r.name);
+          }catch(e){showToast("Failed to update link: "+e.message);}
         }}
         onQuickRefresh={async(lk)=>{
           // Quick refresh: fetch data + update the linked report directly
