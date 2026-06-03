@@ -1629,35 +1629,33 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   // Defensive: ensure numFields is always a Set
   // Priority: 1) DB numFields  2) config.values (admin-declared)  3) auto-detect
   numFields = useMemo(()=>{
-    // 1. DB numFields — most reliable when present
-    if(numFields instanceof Set&&numFields.size>0) return numFields;
-    const arr=Array.isArray(numFields)?numFields:Object.values(numFields||{});
-    if(arr.length>0) return new Set(arr);
+    // Always start from DB numFields as base
+    const base = numFields instanceof Set ? new Set(numFields)
+      : new Set(Array.isArray(numFields)?numFields:Object.values(numFields||{}));
 
-    // 2. Seed from config.values — admin explicitly put these in Values zone
-    // so they MUST be numeric regardless of data content
-    const fromConfig = new Set();
+    // ALWAYS merge config.values fields — these are admin-declared numeric fields.
+    // Must NOT short-circuit before this: DB may be missing fields (e.g. Adv Paid)
+    // even when other numeric fields ARE in DB, so we always union both sources.
     if(config&&config.tabs&&Array.isArray(config.tabs)){
-      config.tabs.forEach(t=>(t.config?.values||[]).forEach(v=>v.field&&fromConfig.add(v.field)));
+      config.tabs.forEach(t=>(t.config?.values||[]).forEach(v=>v.field&&base.add(v.field)));
     }
-    (config?.values||[]).forEach(v=>v.field&&fromConfig.add(v.field));
-    // Also add cardFields
-    (cardFields||[]).forEach(cf=>cf.field&&fromConfig.add(cf.field));
+    (config?.values||[]).forEach(v=>v.field&&base.add(v.field));
+    (cardFields||[]).forEach(cf=>cf.field&&base.add(cf.field));
 
-    // 3. Auto-detect from data (lower reliability — use as supplement only)
+    // Auto-detect supplement — catches numeric cols not in V zone / cardFields
     if(data&&data.length>0){
-      const sample=data.slice(0,50); // larger sample for better accuracy
+      const sample=data.slice(0,50);
       Object.keys(sample[0]||{}).forEach(f=>{
-        if(fromConfig.has(f)) return; // already known numeric
+        if(base.has(f)) return;
         const vals=sample.map(r=>r[f]).filter(v=>v!=null&&v!=="");
         if(!vals.length) return;
         const numCount=vals.filter(v=>
           typeof v==="number"||(typeof v==="string"&&!isNaN(parseFloat(v))&&isFinite(v)&&v.trim()!=="")
         ).length;
-        if(numCount/vals.length>0.8) fromConfig.add(f); // stricter 80% for auto-detect
+        if(numCount/vals.length>0.8) base.add(f);
       });
     }
-    return fromConfig;
+    return base;
   },[numFields,data,config,cardFields]);
   // ── Per-tab filter helpers ──────────────────────────────────────────────────
   // Get saved slicer filters for a tab (from config.tabs[i] or top-level)
@@ -2695,7 +2693,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
         const r = libs.XLSX.utils.decode_range(ws["!ref"]);
         if (r.e.r > 100000) { r.e.r = 100000; ws["!ref"] = libs.XLSX.utils.encode_range(r); }
       }
-      return { rows: libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true }), sheetNames: wb.SheetNames };
+      return { rows: libs.XLSX.utils.sheet_to_json(ws, { defval: null, cellDates: true, raw: true }), sheetNames: wb.SheetNames };
     } catch(e) { return null; }
   }
 
@@ -3636,7 +3634,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             let result;
             try{
               const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
-              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true});result={rows,sheetNames:wb.SheetNames};}}}
+              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
             }catch(e){console.log("browser fetch failed:",e.message);}
             if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined);}
             // Build numFields from the target report's config
