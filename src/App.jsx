@@ -3227,7 +3227,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                                 {r.isPublished&&<span style={{background:T.primary,color:T.textLt,borderRadius:8,padding:"1px 7px",fontSize:10,fontWeight:600}}>Published</span>}
                               </div>
                               <div style={{fontSize:11,color:T.textMd,marginTop:2}}>
-                                {r.rows.toLocaleString()} rows · Rows: {(r.config&&r.config.rows||[]).join(", ")||"—"} · Values: {(r.config&&r.config.values||[]).map(v=>v.field).join(", ")||"—"}
+                                {r.rows.toLocaleString()} rows · Rows: {(r.config&&r.config.rows||[]).join(", ")||"—"} · Values: {(r.config&&r.config?.values||[]).map(v=>v.field).join(", ")||"—"}
                               </div>
                             </div>
                           </label>
@@ -3382,7 +3382,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
       const id = await onSaveReport({
         name: r.name,
         dataset: {...ds, numFields: ds.numFields},
-        config: r.config,
+        config: r.config||{},
         cardFields: r.cardFields||[],
         updateId: targetId,
       });
@@ -3411,7 +3411,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
       // When the report has tabs, initialize the builder with Tab 0's structural
       // config (rows/columns/values etc.) merged in — never rely on top-level
       // structural fields which may be stripped or belong to a different tab.
-      const tabs = r.config && r.config.tabs;
+      const tabs = r.config && r.config?.tabs;
       // Seed adminGlobalFilters from each tab's saved defaultFilters
       // so filters are restored after page refresh or report switch
       const newAdminFilters = {};
@@ -3436,7 +3436,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         setConfig({
           ...r.config,
           ...tab0.config,
-          name: r.config.name,
+          name: r.config?.name,
           tabs: tabs,
         });
         setCardFields(tab0.cardFields || r.cardFields || []);
@@ -3617,12 +3617,12 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 
       {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
         existingConfig={config} savedReports={savedReports}
-        savedLinks={savedReports.flatMap(r=>(r.config&&r.config.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
+        savedLinks={savedReports.flatMap(r=>(r.config&&r.config?.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
         onDeleteLink={async(lk)=>{
           const r=savedReports.find(x=>x.id===lk.reportId);
           if(!r) return;
           // Remove this URL from the report's sourceLinks array
-          const newLinks=(r.config.sourceLinks||[]).filter(x=>x.url!==lk.url);
+          const newLinks=(r.config?.sourceLinks||[]).filter(x=>x.url!==lk.url);
           const updatedCfg={...r.config,sourceLinks:newLinks};
           try{
             await updateReportConfig(lk.reportId,updatedCfg);
@@ -3662,7 +3662,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             const rFresh = savedReports.find(x=>x.id===lk.reportId)||r;
             const rFreshCfg = rFresh?.config || {};
             const ts = Date.now();
-            const newLinks=(rFreshCfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+            const newLinks=(rFreshCfg?.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
             const updatedCfg={...rFreshCfg,sourceLinks:newLinks};
             // Save timestamp to DB (fire-and-forget)
             updateReportConfig(lk.reportId,updatedCfg).catch(()=>{});
@@ -6739,14 +6739,14 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishe
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2,flexWrap:"wrap"}}>
                 <span style={{fontWeight:700,fontSize:14,color:T.text}}>{r.name}</span>
-                {r.config&&r.config.sourceLinks&&r.config.sourceLinks.length>0&&(
-                  <span title={r.config.sourceLinks[0].url}
+                {r.config&&r.config?.sourceLinks&&r.config?.sourceLinks.length>0&&(
+                  <span title={r.config?.sourceLinks[0].url}
                     style={{fontSize:10,background:"rgba(0,100,200,0.09)",color:"#0064C8",
                       border:"1px solid rgba(0,100,200,0.22)",borderRadius:4,padding:"1px 6px",fontWeight:600,whiteSpace:"nowrap"}}>
-                    {getSourceLabel(r.config.sourceLinks[0].url)}
-                    {r.config.sourceLinks[0].sheet&&" · "+r.config.sourceLinks[0].sheet}
-                    {r.config.sourceLinks[0].lastRefreshed
-                      &&" · "+new Date(r.config.sourceLinks[0].lastRefreshed).toLocaleDateString()}
+                    {getSourceLabel(r.config?.sourceLinks[0].url)}
+                    {r.config?.sourceLinks[0].sheet&&" · "+r.config?.sourceLinks[0].sheet}
+                    {r.config?.sourceLinks[0].lastRefreshed
+                      &&" · "+new Date(r.config?.sourceLinks[0].lastRefreshed).toLocaleDateString()}
                   </span>
                 )}
               </div>
@@ -6754,7 +6754,7 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishe
                 <span>{r.rows.toLocaleString()} rows</span>
                 <span>{r.fields} fields</span>
                 <span>Rows: {(r.config&&r.config.rows||[]).join(", ")||"—"}</span>
-                <span>Values: {(r.config&&r.config.values||[]).map(v=>v.field).join(", ")||"—"}</span>
+                <span>Values: {(r.config&&r.config?.values||[]).map(v=>v.field).join(", ")||"—"}</span>
                 <span>Saved: {new Date(r.savedAt).toLocaleDateString()}</span>
                 {r.createdBy&&<span style={{color:T.accent,fontWeight:600}}>By: {r.createdBy}</span>}
               </div>
