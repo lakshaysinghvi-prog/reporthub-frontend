@@ -3617,13 +3617,14 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 
       {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
         existingConfig={config} savedReports={savedReports}
-        savedLinks={savedReports.flatMap(r=>(r.config&&r.config?.sourceLinks||[]).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
+        savedLinks={savedReports.flatMap(r=>getSourceLinks(r.config).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
         onDeleteLink={async(lk)=>{
           const r=savedReports.find(x=>x.id===lk.reportId);
           if(!r) return;
           // Remove this URL from the report's sourceLinks array
-          const newLinks=(r.config?.sourceLinks||[]).filter(x=>x.url!==lk.url);
-          const updatedCfg={...r.config,sourceLinks:newLinks};
+          const cfg=r.config||{};
+          const newLinks=getSourceLinks(cfg).filter(x=>x.url!==lk.url);
+          const updatedCfg={...(cfg||{}),sourceLinks:newLinks};
           try{
             await updateReportConfig(lk.reportId,updatedCfg);
             await loadAllReports();
@@ -3634,6 +3635,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           // Quick refresh: fetch data + update the linked report directly
           setApiLoading(true);
           try{
+            if(!lk||!lk.url){showToast("No URL to refresh");return;}
             // Try browser first then backend proxy
             let result;
             try{
@@ -3647,11 +3649,12 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,lk.rangeOverride||undefined);}
             // Build numFields from the target report's config
             const r=savedReports.find(x=>x.id===lk.reportId);
-            const rc=r?.config||{};
-            const allValFields=r?[
+            if(!r){showToast("Report not found for this link");setApiLoading(false);return;}
+            const rc=r.config||{};
+            const allValFields=[
               ...(rc.values||[]).map(v=>v.field),
               ...((rc.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field))),
-            ]:[];
+            ];
             const nfArr=[...new Set(allValFields.length
               ? allValFields
               : Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")
@@ -3659,15 +3662,25 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             const freshFields = result.fields||Object.keys(result.rows[0]||{});
             await onDataRefresh({rows:result.rows,fields:freshFields,numFields:new Set(nfArr)},lk.reportId);
             // Update lastRefreshed timestamp AFTER data is saved — use fresh r from savedReports
-            const rFresh = savedReports.find(x=>x.id===lk.reportId)||r;
-            const rFreshCfg = rFresh?.config || {};
+            // Update lastRefreshed timestamp — use functional config update (avoids stale closure)
             const ts = Date.now();
-            const newLinks=(rFreshCfg?.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-            const updatedCfg={...rFreshCfg,sourceLinks:newLinks};
-            // Save timestamp to DB (fire-and-forget)
-            updateReportConfig(lk.reportId,updatedCfg).catch(()=>{});
-            // Always update local config state with new timestamp
-            setConfig(cfg=>({...cfg,sourceLinks:(cfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x)}));
+            // Update local config state immediately (functional update = always current)
+            setConfig(cfg=>{
+              if(!cfg) return cfg;
+              const sl = (cfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+              return {...cfg, sourceLinks:sl};
+            });
+            // Persist to DB — read fresh config via API, patch just the timestamp
+            try {
+              const freshReports = await getReports();
+              const freshR = freshReports.find(x=>x.id===lk.reportId);
+              if (freshR) {
+                const freshCfg = freshR.config||{};
+                const sl = (freshCfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+                await updateReportConfig(lk.reportId, {...freshCfg, sourceLinks:sl});
+              }
+            } catch(e) { /* timestamp persist non-critical */ }
+            await loadAllReports(); // refresh sidebar
             showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
             // Provide actionable message for Microsoft/Google auth failures
@@ -6141,7 +6154,7 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
   // Refresh from source URL — old data stays visible, spinner overlay only
   async function refreshFromSource(silent=false) {
     if (!currentMeta) return;
-    const links = currentMeta.config&&currentMeta.config.sourceLinks||[];
+    const links = getSourceLinks(currentMeta?.config);
     if (!links.length) return;
     if (!silent) setRefreshing(true);
     setRefreshError("");
@@ -6186,7 +6199,7 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
   const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
   useEffect(()=>{
     if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
-    const links = currentMeta&&currentMeta.config&&currentMeta.config.sourceLinks||[];
+    const links = currentMeta&&getSourceLinks(currentMeta?.config);
     if (links.length===0) return;
     // Immediately do a silent refresh when report is selected (picks up latest without user action)
     const t = setTimeout(()=>refreshFromSource(true), 1500);
@@ -6237,11 +6250,11 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
             <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
               <div style={{fontWeight:700,fontSize:isMobileView?15:18,color:T.primary}}>{currentMeta.config&&currentMeta.config.name||currentMeta.name}</div>
               <span style={{fontSize:11,background:T.primary,color:T.textLt,padding:"2px 8px",borderRadius:10,fontWeight:600}}>Published</span>
-              {currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0&&(
+              {getSourceLinks(currentMeta?.config).length>0&&(
                 <span style={{fontSize:10,background:"rgba(0,100,200,0.09)",color:"#0064C8",
                   border:"1px solid rgba(0,100,200,0.22)",borderRadius:4,padding:"2px 8px",fontWeight:600}}>
-                  {getSourceLabel(currentMeta.config.sourceLinks[0].url)}
-                  {currentMeta.config.sourceLinks[0].sheet&&" · "+currentMeta.config.sourceLinks[0].sheet}
+                  {getSourceLabel(getSourceLinks(currentMeta?.config)[0]?.url)}
+                  {getSourceLinks(currentMeta?.config)[0]?.sheet&&" · "+getSourceLinks(currentMeta?.config)[0]?.sheet}
                 </span>
               )}
             </div>
@@ -6256,7 +6269,7 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
                   🤝 Workflow
                 </button>
               )}
-              {(currentMeta.config&&currentMeta.config.sourceLinks&&currentMeta.config.sourceLinks.length>0)&&(
+              {(getSourceLinks(currentMeta?.config).length>0)&&(
                 <button onClick={()=>refreshFromSource(false)} disabled={refreshing}
                   title="Pull latest data from Google Drive / OneDrive"
                   style={{display:"flex",alignItems:"center",gap:6,padding:"6px 14px",
@@ -6739,14 +6752,14 @@ function ReportsTab({savedReports,onOpen,onDelete,onPublish,onUnpublish,publishe
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2,flexWrap:"wrap"}}>
                 <span style={{fontWeight:700,fontSize:14,color:T.text}}>{r.name}</span>
-                {r.config&&r.config?.sourceLinks&&r.config?.sourceLinks.length>0&&(
-                  <span title={r.config?.sourceLinks[0].url}
+                {getSourceLinks(r.config).length>0&&(
+                  <span title={getSourceLinks(r.config)[0]?.url}
                     style={{fontSize:10,background:"rgba(0,100,200,0.09)",color:"#0064C8",
                       border:"1px solid rgba(0,100,200,0.22)",borderRadius:4,padding:"1px 6px",fontWeight:600,whiteSpace:"nowrap"}}>
-                    {getSourceLabel(r.config?.sourceLinks[0].url)}
-                    {r.config?.sourceLinks[0].sheet&&" · "+r.config?.sourceLinks[0].sheet}
-                    {r.config?.sourceLinks[0].lastRefreshed
-                      &&" · "+new Date(r.config?.sourceLinks[0].lastRefreshed).toLocaleDateString()}
+                    {getSourceLabel(getSourceLinks(r.config)[0]?.url)}
+                    {getSourceLinks(r.config)[0]?.sheet&&" · "+getSourceLinks(r.config)[0]?.sheet}
+                    {getSourceLinks(r.config)[0]?.lastRefreshed
+                      &&" · "+new Date(getSourceLinks(r.config)[0]?.lastRefreshed).toLocaleDateString()}
                   </span>
                 )}
               </div>
@@ -7041,3 +7054,6 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+
+// Safe sourceLinks accessor — prevents null crashes
+function getSourceLinks(cfg) { return (cfg && cfg.sourceLinks) || []; }
