@@ -2618,7 +2618,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
   const [selectedRefreshIds,setSelectedRefreshIds]=useState(new Set());
   const [pendingLinkSave,setPendingLinkSave]=useState(null); // {url,sheet} to save after Load
 
-  function applySchema(rows,fields,name) {
+  function applySchema(rows,fields,name,blankRowsRemoved=0) {
     if (!rows.length){setParseError("No data rows found after cleaning.");setPhase("error");return;}
     const numFields=detectNumFields(rows,fields);
     const scm=fields.map(f=>({
@@ -2628,15 +2628,14 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
       uniqueCount:_.uniq(rows.map(r=>String(r[f]||""))).length,
     }));
     setAllRows(rows);setAllFields(fields);setPreviewRows(rows.slice(0,8));setSchema(scm);
-    setParseStats({rows:rows.length,fields:fields.length,name});setPhase("preview");
+    setParseStats({rows:rows.length,fields:fields.length,name,blankRowsRemoved});setPhase("preview");
   }
 
   function processRaw(rawRows,name) {
     try{
       const{rows,fields}=sanitizeRows(rawRows);
-      if (rawRows.length>0&&rows.length<rawRows.length*0.75)
-        console.warn("Range note: "+rawRows.length+" raw → "+rows.length+" after blank removal. Use manual range override if total seems low.");
-      applySchema(rows,fields,name);
+      const blankRowsRemoved = rawRows.length - rows.length;
+      applySchema(rows,fields,name,blankRowsRemoved);
     }
     catch(e){setParseError("Cleaning error: "+e.message);setPhase("error");}
   }
@@ -3117,6 +3116,12 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                 <strong>{parseStats&&parseStats.rows&&parseStats.rows.toLocaleString()}</strong> rows · <strong>{parseStats&&parseStats.fields}</strong> columns
                 · Column order preserved from source file
               </div>
+              {parseStats&&parseStats.blankRowsRemoved>0&&(
+                <div style={{fontSize:11,color:T.textMd,marginTop:3,
+                  background:"rgba(200,146,42,0.1)",borderRadius:4,padding:"3px 8px",display:"inline-block"}}>
+                  ⚠ {parseStats.blankRowsRemoved} blank section rows removed (totals/spacers) — data rows are correct
+                </div>
+              )}
               {/* Range override — re-parse with custom range if row count looks wrong */}
               <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
                 <span style={{fontSize:11,color:T.textMd,fontWeight:600}}>Row count wrong?</span>
