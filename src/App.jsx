@@ -2700,7 +2700,9 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
 
   // Strategy A: Browser fetch with credentials (session cookies)
   async function fetchBrowser(url, sheet) {
-    const resp = await fetch(url, { credentials: "include", redirect: "follow" });
+    // cache:"no-store" forces the browser to always hit the network, never serve a
+    // stale cached XLSX — critical for SharePoint where the file gets updated in-place.
+    const resp = await fetch(url, { credentials: "include", redirect: "follow", cache: "no-store" });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const ct = resp.headers.get("content-type") || "";
     if (ct.includes("text/html")) throw new Error("got-html");
@@ -3636,10 +3638,12 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           setApiLoading(true);
           try{
             if(!lk||!lk.url){showToast("No URL to refresh");return;}
-            // Try browser first then backend proxy
+            // Try browser first then backend proxy.
+            // cache:"no-store" forces the browser to always hit the network so we
+            // never serve a stale cached XLSX when the SharePoint file was updated.
             let result;
             try{
-              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow"});
+              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow",cache:"no-store"});
               if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){
                       if(lk.rangeOverride&&lk.rangeOverride.trim()){
                         try{window.XLSX.utils.decode_range(lk.rangeOverride);ws["!ref"]=lk.rangeOverride.trim().toUpperCase();}catch(e){}
@@ -3647,6 +3651,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                       const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
             }catch(e){console.log("browser fetch failed:",e.message);}
             if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,lk.rangeOverride||undefined);}
+            // Sanitize rows (trim column names, drop blank rows) so field names
+            // always match what the config stored (same path as the initial upload).
+            const {rows:cleanRows,fields:cleanFields}=sanitizeRows(result.rows);
             // Build numFields from the target report's config
             const r=savedReports.find(x=>x.id===lk.reportId);
             if(!r){showToast("Report not found for this link");setApiLoading(false);return;}
@@ -3657,10 +3664,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             ];
             const nfArr=[...new Set(allValFields.length
               ? allValFields
-              : Object.keys(result.rows[0]||{}).filter(k=>typeof result.rows[0][k]==="number")
+              : cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number")
             )];
-            const freshFields = result.fields||Object.keys(result.rows[0]||{});
-            await onDataRefresh({rows:result.rows,fields:freshFields,numFields:new Set(nfArr)},lk.reportId);
+            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr)},lk.reportId);
    const ts = Date.now();
             // Update config state with new timestamp
             setConfig(cfg=>{
