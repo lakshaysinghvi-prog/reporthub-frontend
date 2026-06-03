@@ -3661,26 +3661,21 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             )];
             const freshFields = result.fields||Object.keys(result.rows[0]||{});
             await onDataRefresh({rows:result.rows,fields:freshFields,numFields:new Set(nfArr)},lk.reportId);
-            // Update lastRefreshed timestamp AFTER data is saved — use fresh r from savedReports
-            // Update lastRefreshed timestamp — use functional config update (avoids stale closure)
-            const ts = Date.now();
-            // Update local config state immediately (functional update = always current)
+   const ts = Date.now();
+            // Update config state with new timestamp
             setConfig(cfg=>{
-              if(!cfg) return cfg;
-              const sl = (cfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+              if (!cfg) return cfg;
+              const existing = getSourceLinks(cfg);
+              const sl = existing.map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+              if (!existing.find(x=>x.url===lk.url)) sl.push({...lk,lastRefreshed:ts});
               return {...cfg, sourceLinks:sl};
             });
-            // Persist to DB — read fresh config via API, patch just the timestamp
-            try {
-              const freshReports = await getReports();
-              const freshR = freshReports.find(x=>x.id===lk.reportId);
-              if (freshR) {
-                const freshCfg = freshR.config||{};
-                const sl = (freshCfg.sourceLinks||[]).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-                await updateReportConfig(lk.reportId, {...freshCfg, sourceLinks:sl});
-              }
-            } catch(e) { /* timestamp persist non-critical */ }
-            await onReloadReports(); // refresh sidebar
+            // Persist timestamp to DB
+            const rCfg = r?.config||{};
+            const tsLinks = getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+            if (!tsLinks.find(x=>x.url===lk.url)) tsLinks.push({...lk,lastRefreshed:ts});
+            updateReportConfig(lk.reportId, {...rCfg, sourceLinks:tsLinks}).catch(()=>{});
+            await onReloadReports();
             showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
             // Provide actionable message for Microsoft/Google auth failures
