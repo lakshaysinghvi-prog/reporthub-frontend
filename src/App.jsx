@@ -6062,8 +6062,11 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
     try{
       const result=await fetchUrlViaProxy(links[0].url,links[0].sheet||undefined);
       const freshFields=result.fields||(result.rows.length?Object.keys(result.rows[0]):[]);
-      const freshNumFields=result.numFields?new Set(result.numFields):numFieldsRef.current;
-      numFieldsRef.current=freshNumFields;
+      // [] is truthy — must check .length>0 or backend's empty array would replace
+      // numFieldsRef with an empty Set, turning all values to 0.
+      const backendNF = result.numFields&&result.numFields.length>0 ? new Set(result.numFields) : null;
+      const freshNumFields = backendNF && backendNF.size>0 ? backendNF : numFieldsRef.current;
+      if(freshNumFields.size>0) numFieldsRef.current=freshNumFields;
       setLoadedData(p=>({...p,[currentMeta.id]:{rows:result.rows,fields:freshFields,numFields:freshNumFields}}));
       setLastRefreshed(new Date());
     }catch(e){if(!silent)setRefreshError(e.message);}
@@ -6277,14 +6280,15 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
       const lk = links[0];
       const result = await fetchUrlViaProxy(lk.url, lk.sheet||undefined);
       // Use fields/numFields returned by the backend (parsed from actual Excel headers)
-      // NOT from stale closure or numFieldsRef — the Excel headers ARE the ground truth.
       // Backend normalizes column headers (trims whitespace) so they match stored config.
       const freshFields = result.fields || (result.rows.length ? Object.keys(result.rows[0]) : []);
-      const freshNumFields = result.numFields
-        ? new Set(result.numFields)
-        : numFieldsRef.current;
+      // [] is truthy — must check .length>0 or an empty backend array would replace
+      // numFieldsRef with an empty Set, causing all values to show as 0.
+      const backendNF2 = result.numFields&&result.numFields.length>0 ? new Set(result.numFields) : null;
+      const freshNumFields = backendNF2 && backendNF2.size>0 ? backendNF2 : numFieldsRef.current;
 
       // Merge with config.values to ensure value fields are always treated as numeric
+      // (covers currency-formatted cells the backend detection missed)
       const configValueFields = [];
       const mc = currentMeta?.config;
       if (mc) {
