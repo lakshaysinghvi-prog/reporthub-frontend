@@ -6041,7 +6041,9 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
       setLoadedData(p=>({...p,[currentMeta.id]:data}));
       setDataLoading(false);
     }).catch(()=>setDataLoading(false));
-  },[currentMeta?.id]);
+    // row_count in deps: when admin saves new data the count updates → this
+    // effect re-fires → preview re-fetches from the freshly-written cache/DB
+  },[currentMeta?.id, currentMeta?.rows]);
 
   async function refreshFromSource(silent=false){
     if(!currentMeta)return;
@@ -6215,6 +6217,7 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
   useEffect(()=>{ setUserActiveTabIdx(0); },[currentMeta?.id]);
 
   // Load data when report changes — show cache instantly, fetch DB in background
+  // Also re-fires when row_count changes (admin saved new data) so preview updates.
   useEffect(()=>{
     if (!currentMeta) return;
     const id=currentMeta.id;
@@ -6250,7 +6253,9 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
         })
         .catch(()=>{/* silent background refresh failed — keep showing cache */});
     }
-  },[currentMeta?.id]);
+  // row_count in deps: handleSaveReport writes fresh data to dataCache + localStorage
+  // and loadAllReports updates row_count → this effect re-fires → preview gets fresh data
+  },[currentMeta?.id, currentMeta?.rows]);
 
   // Refresh from source URL — old data stays visible, spinner overlay only
   async function refreshFromSource(silent=false) {
@@ -7061,9 +7066,26 @@ export default function App() {
     } else {
       result=await createReport(payload);
     }
-    // Clear ALL caches — force fresh DB read so User Preview sees new data
-    delete dataCache.current[result.id];
-    try { localStorage.removeItem('rh_data_'+result.id); } catch(e) {}
+    // Write fresh data INTO both caches (not delete them).
+    // Deleting caused two problems:
+    //  1. Page refresh → cache miss → DB re-fetch returned stale rows if DB write raced
+    //  2. UserView useEffect never re-fired (same report ID) so preview stayed stale
+    // Writing fresh data means: immediate local read returns the new rows, and
+    // UserView picks up fresh data as soon as its effect fires.
+    const freshCacheEntry = {
+      rows: dataset.rows,
+      fields: dataset.fields,
+      numFields: new Set(nfArr),
+    };
+    dataCache.current[result.id] = freshCacheEntry;
+    try {
+      localStorage.setItem('rh_data_'+result.id, JSON.stringify({
+        rows: dataset.rows,
+        fields: dataset.fields,
+        numFields: nfArr,
+        ts: Date.now(),
+      }));
+    } catch(e) {/* quota — ignore */}
     await loadAllReports();
     return result.id;
   }
