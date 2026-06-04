@@ -3315,21 +3315,14 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                         <button disabled={selectedRefreshIds.size===0}
                           onClick={async()=>{
                             const ids=[...selectedRefreshIds];
+                            const data=pendingRefreshData; // capture before clearing
                             setShowRefreshPicker(false);
                             setSelectedRefreshIds(new Set());
                             setPendingRefreshData(null);
-                            setApiLoading(true);
-                            let lastId=null, errMsg=null;
-                            for (const id of ids) {
-                              try{
-                                lastId = await onDataRefresh(pendingRefreshData,id);
-                              }catch(e){ errMsg=e.message; }
+                            // onDataRefresh (AdminView scope) handles loading/toast/tab switch
+                            for(const id of ids){
+                              await onDataRefresh(data,id);
                             }
-                            setApiLoading(false);
-                            if(errMsg){ showToast("Update failed: "+errMsg); return; }
-                            const names=ids.map(id=>savedReports.find(r=>r.id===id)?.name||id).join(", ");
-                            showToast("✓ Data updated: "+names);
-                            setTab("builder"); // switch to builder so user sees refreshed data
                           }}
                           style={{padding:"7px 18px",background:selectedRefreshIds.size>0?T.primary:"rgba(92,45,26,0.3)",
                             color:T.textLt,border:"none",borderRadius:6,cursor:selectedRefreshIds.size>0?"pointer":"not-allowed",
@@ -3449,11 +3442,12 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   },[dataset,typeOverrides]);
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setActiveTabIdx(0);setTab("builder");}
-  async function onDataRefresh(ds, targetId) {
+  async function onDataRefresh(ds, targetId, {skipFeedback=false}={}) {
     // targetId = which saved report to update data for
+    // skipFeedback=true when called from onQuickRefresh (which owns its own loading/toast)
     const r = savedReports.find(x=>x.id===targetId);
     if (!r) { showToast("Report not found."); return; }
-    // NOTE: caller (onQuickRefresh) already sets setApiLoading(true)
+    if (!skipFeedback) setApiLoading(true);
     try {
       // Use ds.config if provided (e.g. onQuickRefresh bakes in fresh lastRefreshed timestamp)
       // so handleSaveReport writes it to DB in a single PUT — no separate updateReportConfig needed.
@@ -3471,9 +3465,17 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         setDataset(prev=>({...prev,...ds}));
         setActiveReportId(id);
       }
-      // Return id so caller can update timestamps
+      if (!skipFeedback) {
+        showToast("✓ Data updated: "+r.name);
+        setTab("builder"); // bring user to builder so they can see the refreshed pivot
+      }
       return id;
-    } catch(e) { throw e; } // let caller handle error + toast
+    } catch(e) {
+      if (!skipFeedback) showToast("Update failed: "+e.message);
+      throw e;
+    } finally {
+      if (!skipFeedback) setApiLoading(false);
+    }
   }
   async function openSavedReport(id) {
     const r=savedReports.find(x=>x.id===id);
@@ -3758,7 +3760,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             const tsLinks = getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
             if (!tsLinks.find(x=>x.url===lk.url)) tsLinks.push({...lk,lastRefreshed:ts});
             const freshConfig = {...rCfg, sourceLinks:tsLinks};
-            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId);
+            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId,{skipFeedback:true});
             // Mirror the new timestamp into local config state so the UI updates instantly
             setConfig(cfg=>{
               if (!cfg) return cfg;
