@@ -3459,11 +3459,23 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         cardFields: r.cardFields||[],
         updateId: targetId,
       });
-      // Update builder dataset directly — no openSavedReport (causes race conditions)
-      // handleSaveReport already cleared dataCache + localStorage cache
+      // Update builder dataset + config so the builder has something to render.
+      // handleSaveReport already cleared dataCache + localStorage cache.
       if (activeReportId === targetId || !activeReportId) {
-        setDataset(prev=>({...prev,...ds}));
+        // Rows: merge fresh data over whatever was there (or start fresh if dataset was null)
+        setDataset(prev => prev ? {...prev,...ds} : ds);
         setActiveReportId(id);
+        // Config: always restore from the report so the builder is never blank.
+        // This is the same initialisation logic as openSavedReport.
+        const rtabs = r.config?.tabs;
+        if (rtabs && rtabs.length > 0 && rtabs[0]?.config) {
+          setConfig({...r.config, ...rtabs[0].config, name: r.config.name, tabs: rtabs});
+          setCardFields(rtabs[0].cardFields || r.cardFields || []);
+        } else {
+          setConfig(r.config || {});
+          setCardFields(r.cardFields || []);
+        }
+        setActiveTabIdx(0);
       }
       if (!skipFeedback) {
         showToast("✓ Data updated: "+r.name);
