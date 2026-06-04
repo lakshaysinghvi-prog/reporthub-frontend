@@ -2797,7 +2797,16 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
     const numFields=new Set(schema.filter(s=>s.type==="num").map(s=>s.field));
     const fields=schema.map(s=>s.field); // preserve original chronological order
     const name=parseStats&&parseStats.name?parseStats.name:"Report";
-    let baseConfig=existingConfig?{...existingConfig,name}:autoConfig(fields,numFields,name);
+    // Always auto-generate a fresh pivot config from the new data's fields.
+    // We deliberately do NOT inherit the full existingConfig (tabs, rows, columns,
+    // values, filters) because "Load fresh / reset builder" means exactly that —
+    // a clean slate. Inheriting a stale config from a deleted or unrelated report
+    // caused old tabs to appear in new reports.
+    // Only carry over sourceLinks so the saved URL is remembered.
+    let baseConfig=autoConfig(fields,numFields,name);
+    if (existingConfig?.sourceLinks?.length) {
+      baseConfig.sourceLinks=existingConfig.sourceLinks;
+    }
     if (refreshUrl.trim()) {
       const newLink={url:refreshUrl.trim(),sheet:refreshSheet||"",label:name,lastRefreshed:Date.now()};
       const existing=baseConfig.sourceLinks||[];
@@ -7094,8 +7103,15 @@ export default function App() {
   async function handleDeleteReport(id) {
     await apiDeleteReport(id);
     delete dataCache.current[id];
+    try { localStorage.removeItem('rh_data_'+id); } catch(e) {}
     setSavedReports(prev=>prev.filter(r=>r.id!==id));
     if (publishedId===id) setPublishedId(null);
+    // Clear builder state so the deleted report's config (tabs, pivot layout)
+    // cannot bleed into the next fresh upload via existingConfig in confirmLoad.
+    setDataset(null);
+    setConfig(null);
+    setActiveReportId(null);
+    setCardFields([]);
   }
 
   // ── Publish report → always sets published=true ───────────────────────────
