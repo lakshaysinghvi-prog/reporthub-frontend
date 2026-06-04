@@ -2925,7 +2925,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                       placeholder="Sheet name (optional)"
                       style={{padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,
                         background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
-                    <div style={{display:"flex",gap:8}}>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                       <button onClick={async()=>{
                           const newUrl=editingLink.url.trim();
                           const newSheet=editingLink.sheet.trim();
@@ -2934,29 +2934,30 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                           if(!r2){setEditingLink(null);return;}
                           const cfg2=r2.config||{};
                           const existing=getSourceLinks(cfg2);
-                          // Derive a clean label from the new URL (last path segment before any query params)
                           const newLabel=newUrl.split("/").filter(Boolean).pop().split("?")[0]||r2.name;
                           const updLinks=existing.some(x=>x.url===editingLink.origUrl)
                             ? existing.map(x=>x.url===editingLink.origUrl
                                 ?{...x,url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}
                                 :x)
                             : [...existing,{url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}];
-                          const savedLk={...lk,url:newUrl,sheet:newSheet,label:newLabel,reportId:editingLink.reportId};
-                          setEditingLink(null);
-                          // Save new URL to DB first, then immediately refresh data from the new source
                           await (onUpdateLink&&onUpdateLink({reportId:editingLink.reportId,updLinks,cfg:cfg2}));
-                          // Auto-refresh from the new URL so data is in sync right away
-                          setRefreshingLinkUrl(newUrl);
-                          Promise.resolve(onQuickRefresh&&onQuickRefresh(savedLk))
-                            .finally(()=>setRefreshingLinkUrl(null));
+                          setEditingLink(null);
+                          // Pre-fill the URL input below so user can click Load to
+                          // preview + push fresh data from the new source
+                          setRefreshUrl(newUrl);
+                          if(newSheet) setRefreshSheet(newSheet);
+                          setPhase("drop"); // ensure URL input area is visible
                         }}
                         style={{padding:"6px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
-                        Save &amp; Refresh
+                        Save
                       </button>
                       <button onClick={()=>setEditingLink(null)}
                         style={{padding:"6px 14px",background:"none",border:"1px solid "+T.border,borderRadius:6,cursor:"pointer",fontSize:12,color:T.text}}>
                         Cancel
                       </button>
+                    </div>
+                    <div style={{fontSize:11,color:T.textMd,marginTop:6,lineHeight:1.5}}>
+                      After saving, click <strong>Load</strong> in the URL box below to pull fresh data from the new source into the builder.
                     </div>
                   </div>
                   )}
