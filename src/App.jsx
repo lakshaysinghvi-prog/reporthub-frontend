@@ -3314,14 +3314,22 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                         </button>
                         <button disabled={selectedRefreshIds.size===0}
                           onClick={async()=>{
-                            setShowRefreshPicker(false);
                             const ids=[...selectedRefreshIds];
+                            setShowRefreshPicker(false);
                             setSelectedRefreshIds(new Set());
-                            // Update all selected reports sequentially
-                            for (const id of ids) {
-                              await onDataRefresh(pendingRefreshData,id);
-                            }
                             setPendingRefreshData(null);
+                            setApiLoading(true);
+                            let lastId=null, errMsg=null;
+                            for (const id of ids) {
+                              try{
+                                lastId = await onDataRefresh(pendingRefreshData,id);
+                              }catch(e){ errMsg=e.message; }
+                            }
+                            setApiLoading(false);
+                            if(errMsg){ showToast("Update failed: "+errMsg); return; }
+                            const names=ids.map(id=>savedReports.find(r=>r.id===id)?.name||id).join(", ");
+                            showToast("✓ Data updated: "+names);
+                            setTab("builder"); // switch to builder so user sees refreshed data
                           }}
                           style={{padding:"7px 18px",background:selectedRefreshIds.size>0?T.primary:"rgba(92,45,26,0.3)",
                             color:T.textLt,border:"none",borderRadius:6,cursor:selectedRefreshIds.size>0?"pointer":"not-allowed",
