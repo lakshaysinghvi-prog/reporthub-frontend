@@ -2949,13 +2949,9 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                                 ?{...x,url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}
                                 :x)
                             : [...existing,{url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}];
-                          await (onUpdateLink&&onUpdateLink({reportId:editingLink.reportId,updLinks,cfg:cfg2}));
+                          await (onUpdateLink&&onUpdateLink({reportId:editingLink.reportId,updLinks,cfg:cfg2,newUrl,newSheet}));
                           setEditingLink(null);
-                          // Pre-fill the URL input below so user can click Load to
-                          // preview + push fresh data from the new source
-                          setRefreshUrl(newUrl);
-                          if(newSheet) setRefreshSheet(newSheet);
-                          setPhase("drop"); // ensure URL input area is visible
+                          setPhase("drop");
                         }}
                         style={{padding:"6px 18px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600}}>
                         Save
@@ -2966,7 +2962,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                       </button>
                     </div>
                     <div style={{fontSize:11,color:T.textMd,marginTop:6,lineHeight:1.5}}>
-                      After saving, click <strong>Load</strong> in the URL box below to pull fresh data from the new source into the builder.
+                      Saving will update the URL and automatically fetch fresh data from the new source.
                     </div>
                   </div>
                   )}
@@ -3731,13 +3727,41 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             showToast("✓ URL link removed from "+r.name);
           }catch(e){showToast("Failed to remove link: "+e.message);}
         }}
-        onUpdateLink={async({reportId,updLinks,cfg})=>{
+        onUpdateLink={async({reportId,updLinks,cfg,newUrl,newSheet})=>{
           const r=savedReports.find(x=>x.id===reportId);
           if(!r){showToast("Report not found");return;}
           try{
             await updateReportConfig(reportId,{...cfg,sourceLinks:updLinks});
+            if(newUrl){
+              // Auto-fetch from the new URL so the user doesn't have to click ↻ manually
+              setApiLoading(true);
+              try{
+                let result;
+                try{
+                  const resp=await fetch(newUrl,{credentials:"include",redirect:"follow",cache:"no-store"});
+                  if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=newSheet&&wb.SheetNames.includes(newSheet)?newSheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
+                }catch(e){console.log("browser fetch failed:",e.message);}
+                if(!result){result=await fetchUrlViaProxy(newUrl,newSheet||undefined);}
+                const {rows:cleanRows,fields:cleanFields}=sanitizeRows(result.rows);
+                const rc=r.config||{};
+                const allValFields=[...(rc.values||[]).map(v=>v.field),...((rc.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field)))];
+                const nfArr=[...new Set(allValFields.length?allValFields:cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number"))];
+                const ts=Date.now();
+                const tsLinks=updLinks.map(x=>x.url===newUrl?{...x,lastRefreshed:ts}:x);
+                const freshConfig={...cfg,sourceLinks:tsLinks};
+                await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},reportId,{skipFeedback:true});
+                showToast("✓ Link updated + "+cleanRows.length.toLocaleString()+" rows loaded: "+r.name);
+              }catch(e){
+                const msg=e.message||"";
+                if(msg.includes("Connect your Microsoft")||msg.includes("needs_auth")||msg.includes("connect your Microsoft"))
+                  showToast("✓ URL saved — reconnect Microsoft to refresh data");
+                else
+                  showToast("✓ URL saved — auto-refresh failed ("+msg+"). Use ↻ to retry.");
+              }finally{setApiLoading(false);}
+            } else {
+              showToast("✓ Link updated for "+r.name);
+            }
             await onReloadReports();
-            showToast("✓ Link updated for "+r.name);
           }catch(e){showToast("Failed to update link: "+e.message);}
         }}
         onQuickRefresh={async(lk)=>{
@@ -5804,12 +5828,17 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
                             onMouseLeave={e=>e.currentTarget.style.background=innerBg}
                             title="Click to see raw records">{fmtNum(inner[field])}</td>)
                         )}
-                        {/* Separator — empty collab cells to keep alignment */}
+                        {/* Collab inputs at the granular (L2) level — full composite row key */}
                         <td style={{width:0,padding:0,borderRight:"2px solid "+T.borderDk,background:innerBg}}/>
-                        {columns.map(col=><td key={col.id}/>)}
-                        {wfCols.map(col=><td key={"appr_"+col.id}/>)}
-                        {columns.some(c=>c.col_type==="workflow")&&<td/>}
-                        <td/>
+                        {renderCollabCells(innerRk)}
+                        {renderApprovalCells(innerRk)}
+                        {columns.some(c=>c.col_type==="workflow")&&<td style={{padding:"8px 14px",textAlign:"center",borderLeft:"2px solid "+T.borderDk}}>{totalApprovalBadge(wfCols,innerRk)}</td>}
+                        <td style={{padding:"8px 14px",textAlign:"center"}}>
+                          <button onClick={()=>openAudit(innerRk)} title="View audit trail"
+                            style={{background:"none",border:"1px solid "+T.border,borderRadius:5,cursor:"pointer",fontSize:11,padding:"3px 7px",color:T.textMd}}>
+                            🕵
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
