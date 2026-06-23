@@ -219,23 +219,27 @@ function runPivot(data,config,filters) {
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>doAgg(sub,v.field,v.agg));
+    // Normalise: group case-insensitively + trim, keep first-seen original case for display
     const seenRk=new Map();
     filtered.forEach(r=>{
-      const k=rFs.map(f=>String(r[f]||"")).join("\0");
-      if (!seenRk.has(k)) seenRk.set(k,rFs.map(f=>String(r[f]||"")));
+      const k=rFs.map(f=>String(r[f]||"").trim().toLowerCase()).join("\0");
+      if (!seenRk.has(k)) seenRk.set(k,rFs.map(f=>String(r[f]||"").trim()));
     });
     const rowKeys=[...seenRk.values()].sort((a,b)=>a.join("\0").localeCompare(b.join("\0")));
-    const colVals=cF?_.uniq(filtered.map(r=>String(r[cF]||""))).sort():[];
+    const colValSeen=new Map();
+    if(cF) filtered.forEach(r=>{const raw=String(r[cF]||"").trim();const k=raw.toLowerCase();if(!colValSeen.has(k))colValSeen.set(k,raw);});
+    const colVals=cF?[...colValSeen.values()].sort():[];
+    const norm=s=>String(s||"").trim().toLowerCase();
     const cells={};
     rowKeys.forEach(rk=>{
       const rkStr=rk.join("\0");
-      const rd=filtered.filter(r=>rFs.every((f,i)=>String(r[f]||"")===rk[i]));
+      const rd=filtered.filter(r=>rFs.every((f,i)=>norm(r[f])===norm(rk[i])));
       cells[rkStr]={};
-      colVals.forEach(cv=>{cells[rkStr][cv]=compute(rd.filter(r=>String(r[cF]||"")===cv));});
+      colVals.forEach(cv=>{cells[rkStr][cv]=compute(rd.filter(r=>norm(r[cF])===norm(cv)));});
       cells[rkStr]["__total__"]=compute(rd);
     });
     const colTotals={};
-    colVals.forEach(cv=>{colTotals[cv]=compute(filtered.filter(r=>String(r[cF]||"")===cv));});
+    colVals.forEach(cv=>{colTotals[cv]=compute(filtered.filter(r=>norm(r[cF])===norm(cv)));});
     return{rowKeys,colVals,cells,colTotals,grandTotals:compute(filtered),rFs,cF,vals,count:filtered.length};
   } catch(e){return{error:e.message};}
 }
@@ -562,9 +566,10 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
     );
   },[data,activeFilters]);
 
+  const normD=s=>String(s||"").trim().toLowerCase();
   const baseRows=useMemo(()=>filteredBySlicers.filter(row=>
-    rFs.every((f,i)=>String(row[f]||"")===rowKey[i])&&
-    (!cF||!colVal||colVal==="__total__"||String(row[cF]||"")===colVal)
+    rFs.every((f,i)=>normD(row[f])===normD(rowKey[i]))&&
+    (!cF||!colVal||colVal==="__total__"||normD(row[cF])===normD(colVal))
   ),[filteredBySlicers,target]);
   // Apply per-column filters
   const rows=useMemo(()=>baseRows.filter(row=>
@@ -4944,7 +4949,9 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   // Unique C field values for cross-tab column headers
   const cVals=useMemo(()=>{
     if(!cField)return[];
-    return [...new Set(dataRows.map(r=>String(r[cField]||"")))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    const seen=new Map();
+    dataRows.forEach(r=>{const raw=String(r[cField]||"").trim();const k=raw.toLowerCase();if(!seen.has(k))seen.set(k,raw);});
+    return [...seen.values()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   },[cField,dataRows]);
 
   useEffect(()=>{loadAll();},[report.id]);
@@ -5193,7 +5200,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
     viewValues.forEach(({field,agg})=>{ g[field]=doAgg(rows,field,agg); });
     if(cField){
       cVals.forEach(cv=>{
-        const cr=rows.filter(r=>String(r[cField]||"")===cv);
+        const cr=rows.filter(r=>String(r[cField]||"").trim().toLowerCase()===cv.toLowerCase());
         g.__cGroups[cv]={};
         viewValues.forEach(({field,agg})=>{ g.__cGroups[cv][field]=cr.length>0?doAgg(cr,field,agg):null; });
       });
@@ -5203,24 +5210,27 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   let displayRows=filteredRows;
   const isHierarchical=viewRows.length>=2;
   if(viewRows.length===1){
-    // Single-level: each unique value of viewRows[0] is one row
+    // Single-level: each unique value of viewRows[0] is one row (case-insensitive grouping)
     const groups={};const order=[];
     filteredRows.forEach((row,ri)=>{
-      const k=String(row[viewRows[0]]||"");
-      if(!groups[k]){groups[k]={...row,__rk:k,...aggGroup([row]),__level:1};order.push(k);}
+      const rawK=String(row[viewRows[0]]||"").trim();
+      const k=rawK.toLowerCase();
+      if(!groups[k]){groups[k]={...row,__rk:rawK,...aggGroup([row]),__level:1};order.push(k);}
       else{groups[k].__rows.push(row);groups[k].__count++;}
     });
     order.forEach(k=>{ Object.assign(groups[k],aggGroup(groups[k].__rows)); });
     displayRows=order.map(k=>groups[k]);
   } else if(viewRows.length>=2){
-    // Two-level: viewRows[0] = outer, viewRows[1+] = inner
+    // Two-level: viewRows[0] = outer, viewRows[1+] = inner (case-insensitive grouping)
     const L1={};const L1Order=[];
     filteredRows.forEach((row)=>{
-      const k1=String(row[viewRows[0]]||"");
-      const innerKey=viewRows.slice(1).map(f=>String(row[f]||"")).join("||");
-      const rk2=k1+"||"+innerKey;
+      const rawK1=String(row[viewRows[0]]||"").trim();
+      const k1=rawK1.toLowerCase();
+      const rawInner=viewRows.slice(1).map(f=>String(row[f]||"").trim()).join("||");
+      const innerKey=rawInner.toLowerCase();
+      const rk2=rawK1+"||"+rawInner;
       if(!L1[k1]){
-        L1[k1]={...row,__rk:k1,__rows:[],__count:0,__level:1,__cGroups:{},__inner:{},__innerOrder:[]};
+        L1[k1]={...row,__rk:rawK1,__rows:[],__count:0,__level:1,__cGroups:{},__inner:{},__innerOrder:[]};
         L1Order.push(k1);
       }
       L1[k1].__rows.push(row);L1[k1].__count++;
