@@ -214,7 +214,7 @@ function runPivot(data,config,filters) {
         if(s.includes("__zero__")&&isZero) return true;
         return false;
       }
-      return Array.isArray(s)&&s.includes(String(row[f]||""));
+      return Array.isArray(s)&&s.some(v=>v.trim().toLowerCase()===String(row[f]||"").trim().toLowerCase());
     }));
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
@@ -340,7 +340,12 @@ function DrillColFilter({field, data, active, onChange, numFields, activeSort, o
   const panelRef = useRef(null);
   const searchRef = useRef(null);
   const looksNum = numFields.has(field);
-  const rawOpts = useMemo(()=>data&&data.length?_.uniq(data.map(r=>String(r[field]??""))):[]  ,[data,field]);
+  const rawOpts = useMemo(()=>{
+    if(!data||!data.length)return[];
+    const seen=new Map();
+    data.forEach(r=>{const raw=String(r[field]??"").trim();const k=raw.toLowerCase();if(!seen.has(k))seen.set(k,raw);});
+    return [...seen.values()];
+  },[data,field]);
   const [noneMode, setNoneMode] = useState(false);
 
   // ── Draggable panel position ─────────────────────────────────────────────────
@@ -561,7 +566,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
       Object.entries(activeFilters).every(([f,sel])=>{
         if (sel==null||!Array.isArray(sel)||sel.length===0) return true;
         if (sel.includes("__has__")){const v=row[f];return v!==null&&v!==undefined&&v!==""&&Number(v)!==0;}
-        return sel.includes(String(row[f]??""));
+        return sel.some(v=>v.trim().toLowerCase()===String(row[f]??"").trim().toLowerCase());
       })
     );
   },[data,activeFilters]);
@@ -573,7 +578,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
   ),[filteredBySlicers,target]);
   // Apply per-column filters
   const rows=useMemo(()=>baseRows.filter(row=>
-    Object.entries(colFilters).every(([f,sel])=>!sel.length||sel.includes(String(row[f]||"")))
+    Object.entries(colFilters).every(([f,sel])=>!sel.length||sel.some(v=>v.trim().toLowerCase()===String(row[f]||"").trim().toLowerCase()))
   ),[baseRows,colFilters]);
   const showAll=pageSize==="all";
   const effectivePageSize=showAll?rows.length:pageSize;
@@ -790,7 +795,11 @@ function QuickFilterCards({field,data,activeFilters,onFilter,primaryVal,numFmt,n
     ? {field, agg: cardAgg||"sum"}  // use card-specific agg
     : primaryVal;                    // use primary metric per dimension value
 
-  const opts = useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))).sort(),[data,field]);
+  const opts = useMemo(()=>{
+    const seen=new Map();
+    data.forEach(r=>{const raw=String(r[field]||"").trim();const k=raw.toLowerCase();if(!seen.has(k))seen.set(k,raw);});
+    return [...seen.values()].sort();
+  },[data,field]);
   const tooManyOpts = opts.length > 20;
   const defaultMode = (isNumericField || tooManyOpts) ? "summary" : "breakdown";
   const [mode, setMode] = useState(defaultMode);
@@ -930,7 +939,11 @@ function Slicer({field,active,onChange,data}) {
   const [search,setSearch]=useState("");
   const [sortDir,setSortDir]=useState("az"); // "az"|"za"|"09"|"90"
   const ref=useRef(null);
-  const rawOpts=useMemo(()=>_.uniq(data.map(r=>String(r[field]||""))),[field,data]);
+  const rawOpts=useMemo(()=>{
+    const seen=new Map();
+    data.forEach(r=>{const raw=String(r[field]||"").trim();const k=raw.toLowerCase();if(!seen.has(k))seen.set(k,raw);});
+    return [...seen.values()];
+  },[field,data]);
   const [noneMode,setNoneMode]=useState(false);
   // Detect if field looks numeric for numeric sort option
   const looksNumeric=useMemo(()=>{
