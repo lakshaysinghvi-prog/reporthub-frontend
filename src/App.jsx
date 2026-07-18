@@ -6129,9 +6129,8 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
     if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);
     const links=currentMeta?.config?.sourceLinks||[];
     if(!links.length)return;
-    const t=setTimeout(()=>refreshFromSource(true),1500);
     autoRefreshRef.current=setInterval(()=>refreshFromSource(true),AUTO_REFRESH_MS);
-    return()=>{clearTimeout(t);if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);};
+    return()=>{if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);};
   },[currentMeta?.id]);
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
@@ -6372,11 +6371,8 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
     if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
     const links = currentMeta&&getSourceLinks(currentMeta?.config);
     if (links.length===0) return;
-    // Immediately do a silent refresh when report is selected (picks up latest without user action)
-    const t = setTimeout(()=>refreshFromSource(true), 1500);
-    // Then auto-refresh every 5 minutes
     autoRefreshRef.current = setInterval(()=>refreshFromSource(true), AUTO_REFRESH_MS);
-    return()=>{clearTimeout(t); if(autoRefreshRef.current)clearInterval(autoRefreshRef.current);};
+    return()=>{ if(autoRefreshRef.current)clearInterval(autoRefreshRef.current); };
   },[currentMeta?.id]);
 
   const currentData=currentMeta?loadedData[currentMeta.id]:null;
