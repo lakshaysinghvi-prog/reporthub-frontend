@@ -5016,10 +5016,46 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
   const draftKey=(rk,cid)=>rk+"__"+cid;
   const autoSaveTimers=useRef({}); // debounce handles per cell
 
+  // Flush any pending auto-save timer for a cell and ensure its draft is persisted to DB.
+  // Returns true if a flush actually happened (caller may want to reload values).
+  const flushDraft=async(dk,rk,col)=>{
+    if(autoSaveTimers.current[dk]){
+      clearTimeout(autoSaveTimers.current[dk]);
+      delete autoSaveTimers.current[dk];
+    }
+    const draft=draftMap[dk];
+    if(draft&&draft.value!==undefined&&!draft.isReverted){
+      await saveDraft(rk,col);
+      return true;
+    }
+    return false;
+  };
+
   // Submit all pending workflow values across all rows (not just current page)
   const submitAll=async()=>{
     if(!activeCycle||activeCycle.status==="closed")return;
-    const pending=Object.values(values).filter(v=>
+    // Flush every pending auto-save timer so freshly-typed values are included
+    const timerDks=[...Object.keys(autoSaveTimers.current)];
+    const flushes=timerDks.map(dk=>{
+      const sep=dk.lastIndexOf('__');
+      if(sep<0)return null;
+      const rk=dk.substring(0,sep);
+      const colId=parseInt(dk.substring(sep+2));
+      const col=columns.find(c=>c.id===colId);
+      if(!col)return null;
+      return flushDraft(dk,rk,col);
+    }).filter(Boolean);
+    let workingValues=values;
+    if(flushes.length){
+      await Promise.all(flushes);
+      // Reload from DB since saveDraft state updates lag behind in the closure
+      const freshVals=await getCollabValues(report.id,activeCycle.id);
+      const freshMap={};
+      freshVals.forEach(v=>{freshMap[v.row_key+"__"+v.col_id]=v;});
+      setValues(freshMap);
+      workingValues=freshMap;
+    }
+    const pending=Object.values(workingValues).filter(v=>
       v.status==="pending"&&v.value!==null&&v.value!==undefined&&v.value!==""
     ).map(v=>{
       const col=columns.find(c=>c.id===v.col_id||c.id===parseInt(v.col_id));
@@ -5096,6 +5132,9 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
   const submitValue=async(rk,col)=>{
     const dk=draftKey(rk,col.id);
+    // Ensure the draft is persisted to DB before submitting.
+    // If the 800ms debounce hasn't fired yet, the DB row won't exist and submit would fail.
+    await flushDraft(dk,rk,col);
     setSaving(s=>({...s,[dk]:true}));
     try{
       const saved=await submitCollabValue(report.id,activeCycle.id,rk,col.id);
