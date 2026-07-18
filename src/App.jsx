@@ -3835,9 +3835,11 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             await onReloadReports();
             showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
-            // Provide actionable message for Microsoft/Google auth failures
             const msg=e.message||"";
-            if(msg.includes("Connect your Microsoft")||msg.includes("needs_auth")||msg.includes("connect your Microsoft"))
+            // Show real Graph/permission errors verbatim (they contain actionable guidance)
+            if(msg.includes("SharePoint access failed")||msg.includes("HTTP 4"))
+              showToast("Refresh failed: "+msg);
+            else if(msg.includes("Connect your Microsoft")||msg.includes("needs_auth")||msg.includes("connect your Microsoft"))
               showToast("⚠ SharePoint connection expired — go to Upload → Connect Microsoft Account to reconnect");
             else if(msg.includes("Connect your Google")||msg.includes("google"))
               showToast("⚠ Google Drive connection expired — go to Upload → Connect Google Account to reconnect");
