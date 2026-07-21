@@ -3487,13 +3487,14 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     const nfArr=[...new Set(allValFields.length?allValFields:cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number"))];
     const ts=Date.now();
     const rCfg=r?.config||{};
-    const tsLinks=getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+    const lkPatch=lk.rangeOverride!==undefined?{rangeOverride:lk.rangeOverride}:{};
+    const tsLinks=getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,...lkPatch,lastRefreshed:ts}:x);
     if(!tsLinks.find(x=>x.url===lk.url))tsLinks.push({...lk,lastRefreshed:ts});
     const freshConfig={...rCfg,sourceLinks:tsLinks};
     await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId,{skipFeedback:true});
-    setConfig(cfg=>{if(!cfg)return cfg;const existing=getSourceLinks(cfg);const sl=existing.map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);if(!existing.find(x=>x.url===lk.url))sl.push({...lk,lastRefreshed:ts});return{...cfg,sourceLinks:sl};});
+    setConfig(cfg=>{if(!cfg)return cfg;const existing=getSourceLinks(cfg);const sl=existing.map(x=>x.url===lk.url?{...x,...lkPatch,lastRefreshed:ts}:x);if(!existing.find(x=>x.url===lk.url))sl.push({...lk,lastRefreshed:ts});return{...cfg,sourceLinks:sl};});
     await onReloadReports();
-    return cleanRows.length;
+    return {count:cleanRows.length,renamedCols:result.renamedCols||[]};
   }
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setActiveTabIdx(0);setTab("builder");}
@@ -3818,8 +3819,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           setApiLoading(true);
           try{
             if(!lk||!lk.url){showToast("No URL to refresh");return;}
-            const count=await doRefreshLink(lk,lk.rangeOverride);
-            showToast("✓ "+count.toLocaleString()+" rows refreshed: "+lk.label);
+            const{count,renamedCols}=await doRefreshLink(lk,lk.rangeOverride);
+            const warn=renamedCols.length?` ⚠ ${renamedCols.length} column(s) had no Excel header (${renamedCols.map(c=>"Col_"+c).join(", ")}) — add headers to fix.`:"";
+            showToast("✓ "+count.toLocaleString()+" rows refreshed: "+lk.label+warn);
           }catch(e){
             const msg=e.message||"";
             if(msg.includes("too large to refresh via link"))
@@ -4175,8 +4177,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                   if(!range)return;
                   setApiLoading(true);
                   try{
-                    const count=await doRefreshLink(rangeDialog.lk,range);
-                    showToast("✓ "+count.toLocaleString()+" rows refreshed");
+                    const{count,renamedCols}=await doRefreshLink(rangeDialog.lk,range);
+                    const warn=renamedCols.length?` ⚠ ${renamedCols.length} col(s) had no header (${renamedCols.map(c=>"Col_"+c).join(", ")}).`:"";
+                    showToast("✓ "+count.toLocaleString()+" rows refreshed"+warn);
                     setRangeDialog(null);
                   }catch(e){showToast("Refresh failed: "+e.message);}
                   finally{setApiLoading(false);}
@@ -4197,8 +4200,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                     const cfg=r.config||{};
                     const updLinks=getSourceLinks(cfg).map(x=>x.url===lk.url?{...x,rangeOverride:range}:x);
                     await updateReportConfig(lk.reportId,{...cfg,sourceLinks:updLinks});
-                    const count=await doRefreshLink({...lk,rangeOverride:range},range);
-                    showToast("✓ Range saved · "+count.toLocaleString()+" rows refreshed");
+                    const{count,renamedCols}=await doRefreshLink({...lk,rangeOverride:range},range);
+                    const warn=renamedCols.length?` ⚠ ${renamedCols.length} col(s) had no header (${renamedCols.map(c=>"Col_"+c).join(", ")}) — add headers in Excel to fix.`:"";
+                    showToast("✓ Range saved · "+count.toLocaleString()+" rows refreshed"+warn);
                     setRangeDialog(null);
                   }catch(e){showToast("Failed: "+e.message);}
                   finally{setApiLoading(false);}
