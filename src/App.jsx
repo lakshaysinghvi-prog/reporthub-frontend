@@ -2333,7 +2333,12 @@ function CustomCredentialsPanel() {
 
   const startEdit = (provider) => {
     setEditing(provider); setShowSecret(false); setMsg("");
-    setForm({clientId:"", clientSecret:"", tenantId: saved?.[provider]?.tenantId||""});
+    const s = saved?.[provider];
+    setForm({
+      clientId: s?.clientId || "",
+      clientSecret: s?.clientSecret || "",
+      tenantId: s?.tenantId || "",
+    });
   };
 
   const handleTest = async () => {
@@ -2489,9 +2494,9 @@ function CustomCredentialsPanel() {
                   <span style={{fontSize:18}}>{p.icon}</span>
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:12,color:T.text}}>{p.label}</div>
-                    {s?.clientIdMasked
+                    {s?.clientId
                       ? <div style={{fontSize:10,color:T.success,marginTop:2}}>
-                          ✓ Custom credentials saved · {s.clientIdMasked}
+                          ✓ Custom credentials saved · {s.clientId.slice(0,8)}…{s.clientId.slice(-4)}
                           {s.tenantId&&<span style={{marginLeft:6,color:T.textMd}}>{s.tenantId}</span>}
                         </div>
                       : <div style={{fontSize:10,color:T.textMd,marginTop:2}}>Using shared ReportHub app</div>
@@ -2501,9 +2506,9 @@ function CustomCredentialsPanel() {
                     <button onClick={()=>startEdit(p.key)}
                       style={{padding:"4px 10px",background:T.primary,color:T.textLt,border:"none",
                         borderRadius:5,cursor:"pointer",fontSize:11,fontWeight:600}}>
-                      {s?.clientIdMasked?"Update":"Configure"}
+                      {s?.clientId?"Update":"Configure"}
                     </button>
-                    {s?.clientIdMasked&&(
+                    {s?.clientId&&(
                       <button onClick={()=>handleDelete(p.key)}
                         style={{padding:"4px 8px",background:"none",border:"1px solid rgba(163,45,45,0.4)",
                           borderRadius:5,cursor:"pointer",fontSize:11,color:"#A32D2D"}}>
