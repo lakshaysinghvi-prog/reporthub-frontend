@@ -1815,10 +1815,12 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   });
   // Also fire when filters are cleared
   const clearFilters=()=>{
-    // ONLY clears current tab — other tabs completely untouched
-    const idx=activeTabIdx;
-    setTabFilters(prev=>Object.assign({},prev,{[idx]:{}}));
-    setTabPivotFilters(prev=>Object.assign({},prev,{[idx]:{}}));
+    // Route through setFilters/setPivotFilters so ExternalFilters (AdminView) are also cleared.
+    // Direct setTabFilters calls were silently ignored when externalFilters was provided.
+    setFilters({});
+    setPivotFilters({});
+    // Update config.defaultFilters so a subsequent Save persists the cleared state.
+    onFiltersChange&&onFiltersChange({},{});
     setAdHocFields([]);
   };
   const hasActive=Object.values(filters).some(v=>Array.isArray(v)&&v.length>0);
