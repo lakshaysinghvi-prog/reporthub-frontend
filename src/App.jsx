@@ -3570,7 +3570,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     } catch(e){showToast("Load error: "+e.message);}
     finally{setApiLoading(false);}
   }
-  const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
+  const showToast=(msg,duration)=>{setToast(msg);setTimeout(()=>setToast(""),duration||Math.max(3000,Math.min(12000,msg.length*60)));};
   async function doSave() {
     if (!dataset||!config){showToast("Nothing to save yet.");return;}
     // If this dataset came from an existing saved report, offer overwrite or new
@@ -6666,7 +6666,7 @@ function SettingsPanel({currentUser,currentRole,onClose}) {
   const [newUser,setNewUser]=useState({username:"",password:"",role:"user"});
   const [toast,setToast]=useState("");
   const [loading,setLoading]=useState(false);
-  const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
+  const showToast=(msg,duration)=>{setToast(msg);setTimeout(()=>setToast(""),duration||Math.max(3000,Math.min(12000,msg.length*60)));};
 
   // Load users from API on mount
   useEffect(()=>{
