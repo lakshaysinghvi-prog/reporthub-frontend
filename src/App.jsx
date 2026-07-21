@@ -2907,6 +2907,7 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                       </div>
                       <div style={{fontSize:10,color:T.textMd,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:340}}>{lk.url}</div>
                       {lk.sheet&&<div style={{fontSize:10,color:T.textMd}}>Sheet: {lk.sheet}</div>}
+                      {lk.rangeOverride&&<div style={{fontSize:10,color:T.textMd}}>Range: {lk.rangeOverride}</div>}
                       <div style={{fontSize:10,color:lk.lastRefreshed?T.success:T.textMd,marginTop:1}}>
                         {lk.lastRefreshed
                           ? "✓ Last refreshed: "+new Date(lk.lastRefreshed).toLocaleString()
@@ -3450,6 +3451,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [toast,setToast]=useState("");
   const [showSettings,setShowSettings]=useState(false);
   const [apiLoading,setApiLoading]=useState(false);
+  const [rangeDialog,setRangeDialog]=useState(null); // {lk, range} — shown when refresh fails "too large"
   const [activeReportId,setActiveReportId]=useState(null); // id of report currently open in builder
   const [saveDialog,setSaveDialog]=useState(false); // show overwrite/new dialog
   const [activeTabIdx,setActiveTabIdx]=useState(0); // active tab in multi-tab report
@@ -3468,6 +3470,31 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     Object.entries(typeOverrides).forEach(([f,t])=>{if(t==="num")s.add(f);else s.delete(f);});
     return s;
   },[dataset,typeOverrides]);
+
+  // Core link-refresh logic — shared between ↻ button and the range-override dialog
+  async function doRefreshLink(lk, rangeOverride) {
+    let result;
+    try{
+      const resp=await fetch(lk.url,{credentials:"include",redirect:"follow",cache:"no-store"});
+      if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){const ro=rangeOverride||lk.rangeOverride;if(ro&&ro.trim()){try{window.XLSX.utils.decode_range(ro);ws["!ref"]=ro.trim().toUpperCase();}catch(e){}}const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
+    }catch(e){console.log("browser fetch failed:",e.message);}
+    if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,rangeOverride||lk.rangeOverride||undefined);}
+    const{rows:cleanRows,fields:cleanFields}=sanitizeRows(result.rows);
+    const r=savedReports.find(x=>x.id===lk.reportId);
+    if(!r)throw new Error("Report not found for this link");
+    const rc=r.config||{};
+    const allValFields=[...(rc.values||[]).map(v=>v.field),...((rc.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field)))];
+    const nfArr=[...new Set(allValFields.length?allValFields:cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number"))];
+    const ts=Date.now();
+    const rCfg=r?.config||{};
+    const tsLinks=getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
+    if(!tsLinks.find(x=>x.url===lk.url))tsLinks.push({...lk,lastRefreshed:ts});
+    const freshConfig={...rCfg,sourceLinks:tsLinks};
+    await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId,{skipFeedback:true});
+    setConfig(cfg=>{if(!cfg)return cfg;const existing=getSourceLinks(cfg);const sl=existing.map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);if(!existing.find(x=>x.url===lk.url))sl.push({...lk,lastRefreshed:ts});return{...cfg,sourceLinks:sl};});
+    await onReloadReports();
+    return cleanRows.length;
+  }
 
   function onDataLoaded(ds){setDataset(ds);setConfig(ds.config);setTypeOverrides({});setCardFields([]);setActiveReportId(null);setActiveTabIdx(0);setTab("builder");}
   async function onDataRefresh(ds, targetId, {skipFeedback=false}={}) {
@@ -3788,61 +3815,16 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           }catch(e){showToast("Failed to update link: "+e.message);}
         }}
         onQuickRefresh={async(lk)=>{
-          // Quick refresh: fetch data + update the linked report directly
           setApiLoading(true);
           try{
             if(!lk||!lk.url){showToast("No URL to refresh");return;}
-            // Try browser first then backend proxy.
-            // cache:"no-store" forces the browser to always hit the network so we
-            // never serve a stale cached XLSX when the SharePoint file was updated.
-            let result;
-            try{
-              const resp=await fetch(lk.url,{credentials:"include",redirect:"follow",cache:"no-store"});
-              if(resp.ok){const ct=resp.headers.get("content-type")||"";if(!ct.includes("text/html")){const buf=await resp.arrayBuffer();const wb=window.XLSX.read(buf,{type:"array",cellDates:true});const wsName=lk.sheet&&wb.SheetNames.includes(lk.sheet)?lk.sheet:wb.SheetNames[0];const ws=wb.Sheets[wsName];if(ws){
-                      if(lk.rangeOverride&&lk.rangeOverride.trim()){
-                        try{window.XLSX.utils.decode_range(lk.rangeOverride);ws["!ref"]=lk.rangeOverride.trim().toUpperCase();}catch(e){}
-                      }
-                      const rows=window.XLSX.utils.sheet_to_json(ws,{defval:null,cellDates:true,raw:true});result={rows,sheetNames:wb.SheetNames};}}}
-            }catch(e){console.log("browser fetch failed:",e.message);}
-            if(!result){result=await fetchUrlViaProxy(lk.url,lk.sheet||undefined,lk.rangeOverride||undefined);}
-            // Sanitize rows (trim column names, drop blank rows) so field names
-            // always match what the config stored (same path as the initial upload).
-            const {rows:cleanRows,fields:cleanFields}=sanitizeRows(result.rows);
-            // Build numFields from the target report's config
-            const r=savedReports.find(x=>x.id===lk.reportId);
-            if(!r){showToast("Report not found for this link");setApiLoading(false);return;}
-            const rc=r.config||{};
-            const allValFields=[
-              ...(rc.values||[]).map(v=>v.field),
-              ...((rc.tabs||[]).flatMap(t=>(t.config?.values||[]).map(v=>v.field))),
-            ];
-            const nfArr=[...new Set(allValFields.length
-              ? allValFields
-              : cleanFields.filter(k=>typeof cleanRows[0]?.[k]==="number")
-            )];
-            // Bake the new timestamp into the config BEFORE saving so
-            // handleSaveReport writes the fresh timestamp to the DB in one shot
-            // (avoids the race where a separate updateReportConfig call loses to onReloadReports).
-            const ts = Date.now();
-            const rCfg = r?.config||{};
-            const tsLinks = getSourceLinks(rCfg).map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-            if (!tsLinks.find(x=>x.url===lk.url)) tsLinks.push({...lk,lastRefreshed:ts});
-            const freshConfig = {...rCfg, sourceLinks:tsLinks};
-            await onDataRefresh({rows:cleanRows,fields:cleanFields,numFields:new Set(nfArr),config:freshConfig},lk.reportId,{skipFeedback:true});
-            // Mirror the new timestamp into local config state so the UI updates instantly
-            setConfig(cfg=>{
-              if (!cfg) return cfg;
-              const existing = getSourceLinks(cfg);
-              const sl = existing.map(x=>x.url===lk.url?{...x,lastRefreshed:ts}:x);
-              if (!existing.find(x=>x.url===lk.url)) sl.push({...lk,lastRefreshed:ts});
-              return {...cfg, sourceLinks:sl};
-            });
-            await onReloadReports();
-            showToast("✓ "+result.rows.length.toLocaleString()+" rows refreshed: "+lk.label);
+            const count=await doRefreshLink(lk,lk.rangeOverride);
+            showToast("✓ "+count.toLocaleString()+" rows refreshed: "+lk.label);
           }catch(e){
             const msg=e.message||"";
-            // Show real Graph/permission errors verbatim (they contain actionable guidance)
-            if(msg.includes("SharePoint access failed")||msg.includes("HTTP 4"))
+            if(msg.includes("too large to refresh via link"))
+              setRangeDialog({lk,range:lk.rangeOverride||""});
+            else if(msg.includes("SharePoint access failed")||msg.includes("HTTP 4"))
               showToast("Refresh failed: "+msg);
             else if(msg.includes("Connect your Microsoft")||msg.includes("needs_auth")||msg.includes("connect your Microsoft"))
               showToast("⚠ SharePoint connection expired — go to Upload → Connect Microsoft Account to reconnect");
@@ -4162,6 +4144,73 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
       {accessPanel&&<ReportAccessPanel reportId={accessPanel.id} reportName={accessPanel.name} onClose={()=>setAccessPanel(null)}/>}
       {collabPanel&&<CollabSetupPanel report={collabPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>{setCollabPanel(null);onReloadReports();}}/>}
       {collabViewPanel&&<CollabDataView report={collabViewPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>setCollabViewPanel(null)}/>}
+
+      {/* ── Range override dialog (shown when refresh fails "too large") ── */}
+      {rangeDialog&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1200,padding:16}}>
+          <div style={{background:T.bgCard,borderRadius:12,padding:24,width:"100%",maxWidth:440,boxShadow:"0 8px 40px rgba(0,0,0,0.3)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.text,marginBottom:10}}>Sheet too wide — enter data range</div>
+            <div style={{fontSize:13,color:T.textMd,marginBottom:10,lineHeight:1.5}}>
+              The sheet has content extending to distant columns (usually stray Excel formatting). Enter only the range that contains your actual data.
+            </div>
+            <div style={{fontSize:12,color:T.textMd,marginBottom:14,padding:"8px 10px",background:T.bgStat,borderRadius:6,border:"1px solid "+T.border}}>
+              💡 <b>Tip:</b> Open the file in Excel, select your data, then check the Name Box (top-left corner). It will show something like <span style={{fontFamily:"monospace"}}>A1:P7709</span>.
+            </div>
+            <input
+              autoFocus
+              value={rangeDialog.range}
+              onChange={e=>setRangeDialog(d=>({...d,range:e.target.value.toUpperCase()}))}
+              placeholder="e.g. A1:P7709"
+              style={{width:"100%",padding:"9px 12px",border:"1px solid "+T.border,borderRadius:6,fontSize:14,background:T.bgCard,color:T.text,outline:"none",boxSizing:"border-box",marginBottom:16,fontFamily:"monospace",letterSpacing:"0.03em"}}
+            />
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              <button onClick={()=>setRangeDialog(null)}
+                style={{padding:"8px 16px",background:"none",border:"1px solid "+T.borderDk,borderRadius:6,cursor:"pointer",fontSize:12,color:T.textMd}}>
+                Cancel
+              </button>
+              <button
+                disabled={apiLoading||!rangeDialog.range.trim()}
+                onClick={async()=>{
+                  const range=rangeDialog.range.trim();
+                  if(!range)return;
+                  setApiLoading(true);
+                  try{
+                    const count=await doRefreshLink(rangeDialog.lk,range);
+                    showToast("✓ "+count.toLocaleString()+" rows refreshed");
+                    setRangeDialog(null);
+                  }catch(e){showToast("Refresh failed: "+e.message);}
+                  finally{setApiLoading(false);}
+                }}
+                style={{padding:"8px 16px",background:T.bgCard,border:"1px solid "+T.borderDk,borderRadius:6,cursor:apiLoading||!rangeDialog.range.trim()?"not-allowed":"pointer",fontSize:12,color:T.text,opacity:apiLoading||!rangeDialog.range.trim()?0.5:1}}>
+                Refresh once
+              </button>
+              <button
+                disabled={apiLoading||!rangeDialog.range.trim()}
+                onClick={async()=>{
+                  const range=rangeDialog.range.trim();
+                  if(!range)return;
+                  setApiLoading(true);
+                  try{
+                    const{lk}=rangeDialog;
+                    const r=savedReports.find(x=>x.id===lk.reportId);
+                    if(!r)throw new Error("Report not found");
+                    const cfg=r.config||{};
+                    const updLinks=getSourceLinks(cfg).map(x=>x.url===lk.url?{...x,rangeOverride:range}:x);
+                    await updateReportConfig(lk.reportId,{...cfg,sourceLinks:updLinks});
+                    const count=await doRefreshLink({...lk,rangeOverride:range},range);
+                    showToast("✓ Range saved · "+count.toLocaleString()+" rows refreshed");
+                    setRangeDialog(null);
+                  }catch(e){showToast("Failed: "+e.message);}
+                  finally{setApiLoading(false);}
+                }}
+                style={{padding:"8px 16px",background:T.primary,color:T.textLt,border:"none",borderRadius:6,cursor:apiLoading||!rangeDialog.range.trim()?"not-allowed":"pointer",fontSize:12,fontWeight:600,opacity:apiLoading||!rangeDialog.range.trim()?0.5:1}}>
+                Save range & refresh
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {saveDialog&&(
         <div style={{position:"fixed",inset:0,zIndex:600,background:"rgba(44,24,16,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
           <div style={{background:T.bgCard,borderRadius:12,padding:28,width:"min(420px,90vw)",boxShadow:"0 12px 40px rgba(44,24,16,0.3)"}}>
