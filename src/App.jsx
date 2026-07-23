@@ -199,6 +199,26 @@ function doAgg(rows,field,type){
   return _.sum(v);
 }
 
+function matchValueFilter(row, vf) {
+  if (!vf) return true;
+  const raw = row[vf.field];
+  const n = parseFloat(String(raw||"").replace(/[$,₹,]/g,""));
+  if (vf.op==="notzero") return !isNaN(n)&&n!==0;
+  if (vf.op==="zero")    return isNaN(n)||n===0;
+  if (vf.op==="notempty") return raw!==null&&raw!==undefined&&String(raw).trim()!=="";
+  if (vf.op==="empty")    return raw===null||raw===undefined||String(raw).trim()==="";
+  if (vf.op==="gt")  return !isNaN(n)&&n>Number(vf.val);
+  if (vf.op==="gte") return !isNaN(n)&&n>=Number(vf.val);
+  if (vf.op==="lt")  return !isNaN(n)&&n<Number(vf.val);
+  if (vf.op==="lte") return !isNaN(n)&&n<=Number(vf.val);
+  if (vf.op==="eq")  return !isNaN(n)&&n===Number(vf.val);
+  if (vf.op==="neq") return isNaN(n)||n!==Number(vf.val);
+  if (vf.op==="streq") return String(raw||"").trim().toLowerCase()===String(vf.val||"").trim().toLowerCase();
+  if (vf.op==="strne") return String(raw||"").trim().toLowerCase()!==String(vf.val||"").trim().toLowerCase();
+  if (vf.op==="strcontains") return String(raw||"").toLowerCase().includes(String(vf.val||"").toLowerCase());
+  return true;
+}
+
 function runPivot(data,config,filters) {
   try {
     // Filter by ALL active filters — configured slicers AND card filter clicks
@@ -218,7 +238,7 @@ function runPivot(data,config,filters) {
     }));
     const rFs=config.rows, cF=config.columns[0], vals=config.values;
     if (!rFs.length||!vals.length) return null;
-    const compute=sub=>vals.map(v=>doAgg(sub,v.field,v.agg));
+    const compute=sub=>vals.map(v=>{const rows=v.valueFilter?sub.filter(r=>matchValueFilter(r,v.valueFilter)):sub;return doAgg(rows,v.field,v.agg);});
     // Normalise: group case-insensitively + trim, keep first-seen original case for display
     const seenRk=new Map();
     filtered.forEach(r=>{
@@ -1566,6 +1586,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                         </button>
                       </div>
                       <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
+                      {v.valueFilter&&<div style={{fontSize:9,opacity:0.7,marginTop:1,color:"#f59e0b"}}>⊕ {v.valueFilter.field}{v.valueFilter.val!==undefined?" "+v.valueFilter.op+" "+v.valueFilter.val:""}</div>}
                     </div>
                   </div>
                   <ResizeHandle onMouseDown={e=>startColResize("val_"+v.field,e)}/>
@@ -1825,7 +1846,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   };
   const hasActive=Object.values(filters).some(v=>Array.isArray(v)&&v.length>0);
   const cardFieldNames=useMemo(()=>(cardFields||[]).map(x=>typeof x==="string"?x:x.field),[cardFields]);
-  const slicerFields=(config.filters||[]).filter(f=>!cardFieldNames.includes(f));
+  const slicerFields=config.filters||[];
   const primaryVal=(config.values||[])[0]||{field:"",agg:"sum"};
   // All dimension fields available for ad-hoc filtering
   const dimFields=useMemo(()=>fields.filter(f=>!numFields.has(f)),[fields,numFields]);
@@ -2234,8 +2255,58 @@ function DragTag({fieldName, color, onRemove, extra, onReorder, zone}) {
   );
 }
 
+// ── Value filter row — inline condition editor for a single value metric ────────
+function ValueFilterRow({field, vf, allFields, onSave, onClose}) {
+  const [f, setF]=useState(vf?vf.field:field);
+  const [op, setOp]=useState(vf?vf.op:"notzero");
+  const [val, setVal]=useState(vf&&vf.val!==undefined?String(vf.val):"");
+  const needsVal=["gt","gte","lt","lte","eq","neq","streq","strne","strcontains"].includes(op);
+  return(
+    <div style={{padding:"8px 10px",background:T.bgStat,border:"1px solid "+T.border,borderRadius:8,marginTop:4,fontSize:11,maxWidth:"100%"}}>
+      <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+        <span style={{color:T.textMd,whiteSpace:"nowrap"}}>Only rows where:</span>
+        <select value={f} onChange={e=>setF(e.target.value)}
+          style={{padding:"2px 5px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis"}}>
+          {allFields.map(x=><option key={x} value={x}>{x}</option>)}
+        </select>
+        <select value={op} onChange={e=>setOp(e.target.value)}
+          style={{padding:"2px 5px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}>
+          <option value="notzero">≠ 0 (has value)</option>
+          <option value="zero">= 0 / blank</option>
+          <option value="notempty">not empty</option>
+          <option value="empty">is empty</option>
+          <option value="gt">&gt;</option>
+          <option value="gte">≥</option>
+          <option value="lt">&lt;</option>
+          <option value="lte">≤</option>
+          <option value="eq">= (number)</option>
+          <option value="neq">≠ (number)</option>
+          <option value="streq">= (text)</option>
+          <option value="strne">≠ (text)</option>
+          <option value="strcontains">contains</option>
+        </select>
+        {needsVal&&<input value={val} onChange={e=>setVal(e.target.value)} placeholder="value"
+          style={{width:80,padding:"2px 6px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}/>}
+        <button onClick={()=>onSave({field:f,op,...(needsVal?{val}:{})})}
+          style={{padding:"2px 10px",background:T.primary,color:T.textLt,border:"none",borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:600}}>
+          Apply
+        </button>
+        <button onClick={()=>onSave(null)}
+          style={{padding:"2px 8px",background:"none",border:"1px solid "+T.border,borderRadius:4,cursor:"pointer",fontSize:11,color:T.textMd}}>
+          Clear
+        </button>
+        <button onClick={onClose}
+          style={{padding:"2px 6px",background:"none",border:"none",cursor:"pointer",fontSize:13,color:T.textMd,lineHeight:1}}>
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Zone box with drag-and-drop reorder ────────────────────────────────────────
-function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onReorder, zone, emptyMsg}) {
+function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValueFilterChange, onReorder, zone, emptyMsg, allFields}) {
+  const [openFilterFor, setOpenFilterFor]=useState(null);
   return(
     <div style={{background:T.bgCard,border:"1px solid "+color+"50",borderRadius:10,padding:12}}>
       <div style={{fontSize:10,fontWeight:700,color,marginBottom:8,textTransform:"uppercase",letterSpacing:"1px",display:"flex",alignItems:"center",gap:6}}>
@@ -2244,15 +2315,29 @@ function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onReord
       </div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6,minHeight:30}}>
         {isValues ? fields.map(v=>(
-          <DragTag key={v.field} fieldName={v.field} color={color} zone={zone}
-            onRemove={()=>onRemove(v.field)} onReorder={onReorder}
-            extra={<>
-              <select value={v.agg} onChange={e=>onAggChange&&onAggChange(v.field,e.target.value)}
-                style={{fontSize:10,border:"none",background:"transparent",color,cursor:"pointer",padding:"0 2px",marginLeft:3}}>
-                {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
-              </select>
-
-            </>}/>
+          <div key={v.field} style={{display:"flex",flexDirection:"column",flex:"0 0 auto",maxWidth:"100%"}}>
+            <DragTag fieldName={v.field} color={color} zone={zone}
+              onRemove={()=>onRemove(v.field)} onReorder={onReorder}
+              extra={<>
+                <select value={v.agg} onChange={e=>onAggChange&&onAggChange(v.field,e.target.value)}
+                  style={{fontSize:10,border:"none",background:"transparent",color,cursor:"pointer",padding:"0 2px",marginLeft:3}}>
+                  {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+                </select>
+                {onValueFilterChange&&<button
+                  onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===v.field?null:v.field);}}
+                  title={v.valueFilter?"Edit row condition":"Add row condition (count/sum only matching rows)"}
+                  style={{background:v.valueFilter?"#d97706":"none",border:"1px solid "+(v.valueFilter?"#d97706":color+"80"),
+                    borderRadius:4,cursor:"pointer",fontSize:9,padding:"0 4px",marginLeft:2,
+                    color:v.valueFilter?"#fff":color,lineHeight:"16px",flexShrink:0}}>
+                  {v.valueFilter?"⊕ filter":"⊕"}
+                </button>}
+              </>}/>
+            {openFilterFor===v.field&&onValueFilterChange&&(
+              <ValueFilterRow field={v.field} vf={v.valueFilter} allFields={allFields||[]}
+                onSave={vf=>{onValueFilterChange(v.field,vf);setOpenFilterFor(null);}}
+                onClose={()=>setOpenFilterFor(null)}/>
+            )}
+          </div>
         )) : fields.map(f=>(
           <DragTag key={f} fieldName={f} color={color} zone={zone}
             onRemove={()=>onRemove(f)} onReorder={onReorder}/>
@@ -2935,10 +3020,10 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                           ? <><span style={{display:"inline-block",animation:"spin 0.8s linear infinite",fontSize:14}}>⟳</span> Saving…</>
                           : "↻ Refresh"}
                       </button>
-                      <button onClick={()=>setEditingLink({origUrl:lk.url,reportId:lk.reportId,url:lk.url,sheet:lk.sheet||""})}
+                      <button onClick={()=>setEditingLink({origUrl:lk.url,reportId:lk.reportId,url:lk.url,sheet:lk.sheet||"",range:lk.rangeOverride||""})}
                         style={{padding:"4px 10px",background:"none",border:"1px solid "+T.borderDk,
                           borderRadius:6,cursor:"pointer",fontSize:11,color:T.primary,textAlign:"center"}}>
-                        ✏ Edit URL
+                        ✏ Edit
                       </button>
                       <button onClick={()=>setConfirmDeleteUrl(lk.url+"|"+lk.reportId)}
                         style={{padding:"4px 10px",background:"none",border:"1px solid rgba(163,45,45,0.4)",
@@ -2960,10 +3045,15 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                       placeholder="Sheet name (optional)"
                       style={{padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,
                         background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+                    <input value={editingLink.range||""} onChange={e=>setEditingLink(el=>({...el,range:e.target.value.toUpperCase()}))}
+                      placeholder="Cell range, e.g. A1:AH8000 (optional — leave blank to auto-detect)"
+                      style={{padding:"7px 10px",border:"1px solid "+T.border,borderRadius:6,fontSize:12,
+                        background:T.bgCard,color:T.text,outline:"none",width:"100%",boxSizing:"border-box",fontFamily:"monospace"}}/>
                     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                       <button onClick={async()=>{
                           const newUrl=editingLink.url.trim();
                           const newSheet=editingLink.sheet.trim();
+                          const newRange=editingLink.range?editingLink.range.trim().toUpperCase():undefined;
                           if(!newUrl) return;
                           const r2=savedReports.find(x=>x.id===editingLink.reportId);
                           if(!r2){setEditingLink(null);return;}
@@ -2972,9 +3062,9 @@ function UploadTab({libs, onDataLoaded, onDataRefresh, existingConfig, savedRepo
                           const newLabel=newUrl.split("/").filter(Boolean).pop().split("?")[0]||r2.name;
                           const updLinks=existing.some(x=>x.url===editingLink.origUrl)
                             ? existing.map(x=>x.url===editingLink.origUrl
-                                ?{...x,url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}
+                                ?{...x,url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null,...(newRange?{rangeOverride:newRange}:{rangeOverride:undefined})}
                                 :x)
-                            : [...existing,{url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null}];
+                            : [...existing,{url:newUrl,sheet:newSheet,label:newLabel,lastRefreshed:null,...(newRange?{rangeOverride:newRange}:{})}];
                           await (onUpdateLink&&onUpdateLink({reportId:editingLink.reportId,updLinks,cfg:cfg2,newUrl,newSheet}));
                           setEditingLink(null);
                           setPhase("drop");
@@ -3697,6 +3787,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   }
 
   function setAgg(field,agg,isCurrency){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,agg,...(isCurrency!==undefined?{isCurrency}:{})}:v)}));}
+  function setValueFilter(field,vf){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,valueFilter:vf||undefined}:v)}));}
 
   function reorderInZone(zone,fromField,toField) {
     setConfig(c=>{
@@ -3926,7 +4017,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 emptyMsg="Press C on any field"/>
             </div>
             <ZoneBox label="Values (V) — multiple metrics, drag to reorder" color={T.tagV} zone="values"
-              fields={config.values} isValues onAggChange={setAgg}
+              fields={config.values} isValues onAggChange={setAgg} onValueFilterChange={setValueFilter}
+              allFields={dataset?dataset.fields:[]}
               onRemove={f=>removeFrom("values",f)} onReorder={(a,b)=>reorderInZone("values",a,b)}
               emptyMsg="Press V on a numeric field"/>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
