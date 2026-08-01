@@ -356,6 +356,96 @@ function runPivot(data,config,filters) {
   } catch(e){return{error:e.message};}
 }
 
+// ── Print ──────────────────────────────────────────────────────────────────────
+// Clones a section into a hidden iframe and calls print() on it, so the browser
+// shows its own print dialog — printers, duplex and paper come straight from the
+// OS driver list. The clone is flattened (scroll boxes opened, sticky headers
+// unstuck, controls dropped) and then scaled so the widest content fits the page.
+const PX_PER_MM=96/25.4, PRINT_MARGIN_MM=10;
+const A4_PORTRAIT_PX =(210-2*PRINT_MARGIN_MM)*PX_PER_MM;
+const A4_LANDSCAPE_PX=(297-2*PRINT_MARGIN_MM)*PX_PER_MM;
+
+function printSection(node,{title="ReportHub",subtitle=""}={}) {
+  if(!node){alert("Nothing to print on this tab yet.");return;}
+  // Snapshot live control values BEFORE cloning — cloneNode copies attributes,
+  // not the current value of a React-controlled input, so workflow entries and
+  // format pickers would otherwise print blank.
+  const srcCtl=[...node.querySelectorAll("input,select,textarea")];
+  const clone=node.cloneNode(true);
+  [...clone.querySelectorAll("input,select,textarea")].forEach((el,i)=>{
+    const src=srcCtl[i];
+    let text="";
+    if(src){
+      if(src.type==="checkbox"||src.type==="radio") text=src.checked?"Yes":"";
+      else if(src.tagName==="SELECT") text=(src.options[src.selectedIndex]||{}).text||"";
+      else text=src.value||"";
+    }
+    if(String(text).trim()){
+      const span=document.createElement("span");
+      span.textContent=text;
+      span.style.cssText="font:inherit;color:inherit";
+      el.parentNode.replaceChild(span,el);
+    } else el.remove();
+  });
+  // Buttons carry no meaning on paper
+  clone.querySelectorAll("button,[data-noprint]").forEach(el=>el.remove());
+  clone.querySelectorAll("*").forEach(el=>{
+    const s=el.style;
+    // Open scroll containers so the whole table prints, not just the visible slice.
+    // overflow:hidden is left alone — that is deliberate text truncation.
+    ["overflow","overflowX","overflowY"].forEach(k=>{if(/auto|scroll/.test(s[k]||""))s[k]="visible";});
+    if(s.maxHeight)s.maxHeight="none";
+    if(s.position==="sticky"||s.position==="fixed")s.position="static";
+    if(s.boxShadow)s.boxShadow="none";
+  });
+
+  const ifr=document.createElement("iframe");
+  ifr.setAttribute("aria-hidden","true");
+  ifr.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+  document.body.appendChild(ifr);
+  const d=ifr.contentDocument;
+  d.open();
+  d.write("<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>");
+  d.close();
+  d.title=String(title).replace(/[<>&]/g,"");           // becomes the PDF filename
+  d.body.style.cssText="margin:0;background:#fff;font-family:system-ui,sans-serif";
+
+  const wrap=d.createElement("div");
+  wrap.style.cssText="display:inline-block;transform-origin:top left;background:#fff";
+  if(title||subtitle){
+    const h=d.createElement("div");
+    h.style.cssText="margin-bottom:10px;font-family:system-ui,sans-serif";
+    h.innerHTML="<div style='font-size:16px;font-weight:700;color:#5C2D1A'></div>"+
+                "<div style='font-size:11px;color:#7a6a5f;margin-top:2px'></div>";
+    h.children[0].textContent=title;
+    h.children[1].textContent=(subtitle?subtitle+"  ·  ":"")+"Printed "+new Date().toLocaleString();
+    wrap.appendChild(h);
+  }
+  wrap.appendChild(clone);
+  d.body.appendChild(wrap);
+
+  setTimeout(()=>{
+    const cw=Math.max(wrap.scrollWidth,wrap.offsetWidth,1);
+    const landscape=cw>A4_PORTRAIT_PX;                   // widen the page before shrinking type
+    const avail=landscape?A4_LANDSCAPE_PX:A4_PORTRAIT_PX;
+    const scale=Math.min(1,avail/cw);
+    wrap.style.width=cw+"px";
+    wrap.style.transform="scale("+scale+")";
+    // A transformed box keeps its unscaled layout height — pin the real height so
+    // the print run does not tack on blank trailing pages.
+    d.body.style.height=Math.ceil(wrap.scrollHeight*scale)+"px";
+    const st=d.createElement("style");
+    st.textContent="@page{size:A4 "+(landscape?"landscape":"portrait")+";margin:"+PRINT_MARGIN_MM+"mm}"+
+      "*{-webkit-print-color-adjust:exact;print-color-adjust:exact}"+
+      "table{page-break-inside:auto}tr{page-break-inside:avoid}thead{display:table-header-group}";
+    d.head.appendChild(st);
+    setTimeout(()=>{
+      try{ifr.contentWindow.focus();ifr.contentWindow.print();}catch(e){}
+      setTimeout(()=>{try{document.body.removeChild(ifr);}catch(e){}},1500);
+    },120);
+  },80);
+}
+
 // ── Export helpers ─────────────────────────────────────────────────────────────
 function exportExcel(result, config, numFmt) {
   if (!window.XLSX) { alert("XLSX library not loaded yet. Please wait a moment."); return; }
@@ -650,6 +740,7 @@ function DrillColFilter({field, data, active, onChange, numFields, activeSort, o
 
 
 function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,savedColFmts,onSaveHiddenCols,onSaveColFilters,configValues,activeFilters}) {
+  const drillPrintRef=useRef(null);
   const [page,setPage]=useState(0);
   const [pageSize,setPageSize]=useState(25); // 25|50|100|"all"
   const [colFiltersSaved,setColFiltersSaved]=useState(false); // feedback after saving col layout
@@ -776,6 +867,11 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
               </div>
             )}
           </div>
+          <button onClick={()=>printSection(drillPrintRef.current,{title:"Drill-down: "+metricLabel,subtitle:title})}
+            title="Print these rows — pick your printer in the browser's print dialog"
+            style={{padding:"4px 10px",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,background:"rgba(255,255,255,0.12)",cursor:"pointer",fontSize:11,color:T.textLt,fontWeight:600,whiteSpace:"nowrap"}}>
+            🖨 Print
+          </button>
           <button onClick={onClose} style={{width:28,height:28,borderRadius:6,border:"none",background:"rgba(255,255,255,0.15)",cursor:"pointer",fontSize:16,color:T.textLt,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
         {/* Hint + status bar */}
@@ -798,7 +894,7 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
           )}
         </div>
         {/* Table — full horizontal scroll, all columns, original order */}
-        <div style={{overflowX:"auto",flex:1,overflowY:"auto"}}>
+        <div ref={drillPrintRef} style={{overflowX:"auto",flex:1,overflowY:"auto"}}>
           <table style={{borderCollapse:"collapse",fontSize:12,tableLayout:"fixed",minWidth:"100%"}}>
             <thead style={{position:"sticky",top:0,zIndex:5}}><tr style={{background:T.bgTableH}}>
               {visibleCols.map(f=>{
@@ -2549,7 +2645,7 @@ function FieldRow({field, isNum, status, onToggle, onToggleType, onToggleCard}) 
 }
 
 // ── App header ─────────────────────────────────────────────────────────────────
-function AppHeader({role, onLogout, children}) {
+function AppHeader({role, onLogout, children, printRef, printTitle, printSubtitle}) {
   const isMobile = useViewport();
   return(
     <div style={{position:"sticky",top:0,zIndex:50,background:T.bgHeader,borderBottom:"2px solid "+T.borderHd,
@@ -2561,6 +2657,15 @@ function AppHeader({role, onLogout, children}) {
       {!isMobile&&<span style={{color:"rgba(245,239,230,0.3)"}}>|</span>}
       {!isMobile&&<span style={{fontSize:11,color:T.textLt,background:"rgba(255,255,255,0.12)",padding:"2px 10px",borderRadius:4,fontWeight:500}}>{role}</span>}
       <div style={{flex:1}}/>{children}
+      {printRef&&(
+        <button onClick={()=>printSection(printRef.current,{title:printTitle||"ReportHub",subtitle:printSubtitle||""})}
+          title="Print this tab — pick your printer in the browser's print dialog"
+          style={{padding:isMobile?"5px 9px":"5px 12px",background:"rgba(255,255,255,0.12)",
+            border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt,
+            whiteSpace:"nowrap",flexShrink:0}}>
+          🖨{isMobile?"":" Print"}
+        </button>
+      )}
       <button onClick={onLogout} style={{padding:isMobile?"5px 10px":"5px 14px",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:6,cursor:"pointer",fontSize:12,color:T.textLt}}>{isMobile?"Out":"Logout"}</button>
     </div>
   );
@@ -3708,6 +3813,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
   const [typeOverrides,setTypeOverrides]=useState({});
   const [cardFields,setCardFields]=useState([]);
   const [tab,setTab]=useState("upload");
+  const printRef=useRef(null); // wraps the active tab's content for printing
   const [toast,setToast]=useState("");
   const [showSettings,setShowSettings]=useState(false);
   const [apiLoading,setApiLoading]=useState(false);
@@ -4015,7 +4121,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 
   return(
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
-      <AppHeader role={roleLabel} onLogout={onLogout}>
+      <AppHeader role={roleLabel} onLogout={onLogout} printRef={printRef}
+        printTitle={(config&&config.name)||"ReportHub"}
+        printSubtitle={TABS.find(t=>t[0]===tab)?.[1]||""}>
         {toast&&<span style={{fontSize:12,color:T.textLt,background:"rgba(45,106,79,0.5)",padding:"4px 12px",borderRadius:6,fontWeight:500,border:"1px solid rgba(45,106,79,0.6)"}}>{toast}</span>}
         {dataset&&config&&<button onClick={doSave} disabled={apiLoading} style={{padding:"6px 14px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,cursor:apiLoading?"wait":"pointer",fontSize:12,fontWeight:600,opacity:apiLoading?0.6:1}}>
           {apiLoading?"Saving…":"Save Report"}
@@ -4032,6 +4140,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
         {TABS.map(([t,l,d])=>tabBtn(t,l,d))}
       </div>
 
+      <div ref={printRef}>
       {tab==="upload"&&<UploadTab libs={libs} onDataLoaded={onDataLoaded} onDataRefresh={savedReports.length?onDataRefresh:null}
         existingConfig={config} savedReports={savedReports}
         savedLinks={savedReports.flatMap(r=>getSourceLinks(r.config).map(lk=>({...lk,reportId:r.id,label:lk.label||r.name})))}
@@ -4416,6 +4525,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           onOpenView={(r)=>setCollabViewPanel({id:r.id,name:r.name,report:r})}
           onReload={onReloadReports}/>
       )}
+      </div>
+
       {showSettings&&<SettingsPanel currentUser={currentUser} currentRole={currentRole} onClose={()=>setShowSettings(false)}/>}
       {accessPanel&&<ReportAccessPanel reportId={accessPanel.id} reportName={accessPanel.name} onClose={()=>setAccessPanel(null)}/>}
       {collabPanel&&<CollabSetupPanel report={collabPanel.report} currentUser={currentUser} currentRole={currentRole} onClose={()=>{setCollabPanel(null);onReloadReports();}}/>}
@@ -5360,6 +5471,7 @@ function UserMultiSelect({label,value=[],allUsers=[],onChange}) {
 // ── Phase 3: Collab Data View (modal) ────────────────────────────────────────
 // Shows flat table of data rows + collab columns; inputters can enter values, reviewers can approve
 function CollabDataView({report,currentUser,currentRole,onClose}) {
+  const wfPrintRef=useRef(null);
   const [columns,setColumns]=useState([]);
   const [cycles,setCycles]=useState([]);
   const [activeCycle,setActiveCycle]=useState(null);
@@ -5867,6 +5979,11 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
               ⬇ Excel
             </button>
           )}
+          <button onClick={()=>printSection(wfPrintRef.current,{title:report.name+" — Workflow",subtitle:activeCycle?cycleLabel(activeCycle):""})}
+            title="Print this view — pick your printer in the browser's print dialog"
+            style={{padding:"5px 12px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
+            🖨 Print
+          </button>
           <button onClick={onClose} style={{background:"none",border:"none",color:T.textLt,fontSize:20,cursor:"pointer"}}>✕</button>
         </div>
       </div>
@@ -5973,7 +6090,7 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
 
       {/* Main table */}
       {!loading&&(activeCycle||cycles.length>0)&&columns.length>0&&(
-        <div style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
+        <div ref={wfPrintRef} style={{flex:1,overflow:"auto",padding:"0 0 20px 0"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bgTableH,position:"sticky",top:0,zIndex:2}}>
@@ -6694,6 +6811,7 @@ function MyReportsViewer({savedReports,onLoadReportData}) {
 // ── User view ──────────────────────────────────────────────────────────────────
 function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRole}) {
   const isMobileView=useViewport();
+  const printRef=useRef(null); // wraps the report body for printing
   const [activeId,setActiveId]=useState(null);
   const [collabViewReport,setCollabViewReport]=useState(null);
   const [dataLoading,setDataLoading]=useState(false);
@@ -6881,7 +6999,10 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
 
   return(<>
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
-      <AppHeader role="User" onLogout={onLogout}>
+      <AppHeader role="User" onLogout={onLogout}
+        printRef={currentMeta&&currentData?printRef:null}
+        printTitle={(currentMeta&&(currentMeta.config&&currentMeta.config.name||currentMeta.name))||"ReportHub"}
+        printSubtitle={(currentMeta&&currentMeta.config&&currentMeta.config.tabs&&currentMeta.config.tabs[userActiveTabIdx]?.name)||""}>
         {publishedReports.length>0&&(
           <div style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:0}}>
             <span style={{fontSize:11,color:"rgba(245,239,230,0.6)",flexShrink:0}}>Report:</span>
@@ -6904,7 +7025,7 @@ function UserView({onLogout,savedReports,onLoadReportData,currentUser,currentRol
         </div>
       )}
       {!dataLoading&&currentMeta&&currentData?(
-        <div style={{padding:isMobileView?10:20}}>
+        <div ref={printRef} style={{padding:isMobileView?10:20}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:8}}>
             <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
               <div style={{fontWeight:700,fontSize:isMobileView?15:18,color:T.primary}}>{currentMeta.config&&currentMeta.config.name||currentMeta.name}</div>
