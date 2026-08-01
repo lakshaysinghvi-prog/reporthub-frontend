@@ -199,6 +199,56 @@ function doAgg(rows,field,type){
   return _.sum(v);
 }
 
+// ── Field bucketing ────────────────────────────────────────────────────────────
+// A bucket definition: {name, field, ranges:[{from,to,label}], otherLabel, blankLabel}
+// Ranges are half-open [from, to) so adjacent ranges never double-count.
+const toNum = v => {
+  if (typeof v === "number") return v;
+  const n = parseFloat(String(v ?? "").replace(/[$,₹\s]/g, ""));
+  return isNaN(n) ? NaN : n;
+};
+
+function bucketRangeLabel(r, i) {
+  if (r.label && r.label.trim()) return r.label.trim();
+  const lo = r.from === "" || r.from == null ? null : Number(r.from);
+  const hi = r.to === "" || r.to == null ? null : Number(r.to);
+  const s = n => Math.abs(n) >= 1e7 ? (n/1e7)+"Cr" : Math.abs(n) >= 1e5 ? (n/1e5)+"L" : Math.abs(n) >= 1e3 ? (n/1e3)+"K" : String(n);
+  const body = lo == null ? "< "+s(hi) : hi == null ? s(lo)+"+" : s(lo)+"–"+s(hi);
+  return String(i+1).padStart(2,"0")+". "+body;
+}
+
+function bucketValueFor(raw, b) {
+  const n = toNum(raw);
+  if (isNaN(n)) return b.blankLabel || "(blank)";
+  for (let i = 0; i < b.ranges.length; i++) {
+    const r = b.ranges[i];
+    const lo = r.from === "" || r.from == null ? -Infinity : Number(r.from);
+    const hi = r.to   === "" || r.to   == null ?  Infinity : Number(r.to);
+    if (n >= lo && n < hi) return bucketRangeLabel(r, i);
+  }
+  return b.otherLabel || "zz. Other";
+}
+
+function applyBuckets(data, buckets) {
+  if (!buckets || !buckets.length) return data;
+  const active = buckets.filter(b => b && b.name && b.field && Array.isArray(b.ranges) && b.ranges.length);
+  if (!active.length) return data;
+  return data.map(row => {
+    const add = {};
+    active.forEach(b => { add[b.name] = bucketValueFor(row[b.field], b); });
+    return { ...row, ...add };
+  });
+}
+
+const VF_OP_LABEL={notzero:"is not 0",zero:"is 0 / blank",notempty:"is not empty",empty:"is empty",
+  gt:">",gte:"≥",lt:"<",lte:"≤",eq:"=",neq:"≠",streq:"is",strne:"is not",strcontains:"contains"};
+
+function describeValueFilter(vf){
+  if(!vf) return "";
+  const op=VF_OP_LABEL[vf.op]||vf.op;
+  return vf.val!==undefined&&vf.val!==""?`${vf.field} ${op} ${vf.val}`:`${vf.field} ${op}`;
+}
+
 function matchValueFilter(row, vf) {
   if (!vf) return true;
   const raw = row[vf.field];
@@ -1664,7 +1714,14 @@ function FormatSelector({value,onChange,allowedFmts}) {
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────
-function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange,onTabDelete,onFiltersChange,onSaveFilters,onSaveColFilters,externalFilters,externalPivotFilters,onExternalFiltersChange,onExternalPivotFiltersChange}) {
+function Report({config,data,fields,numFields,showExport,cardFields,onDrillHiddenColsChange,onColExcludedChange,tabs,activeTabIdx,onTabChange,onTabsChange,onTabDelete,onFiltersChange,onSaveFilters,onSaveColFilters,externalFilters,externalPivotFilters,onExternalFiltersChange,onExternalPivotFiltersChange,onValueFilterChange}) {
+  // Bucketed dimensions are derived here so preview and user view both see them
+  const bucketDefs=useMemo(()=>(config&&config.buckets)||[],[config]);
+  data=useMemo(()=>applyBuckets(data,bucketDefs),[data,bucketDefs]);
+  fields=useMemo(()=>{
+    const names=bucketDefs.map(b=>b&&b.name).filter(Boolean);
+    return names.length?[...fields,...names.filter(n=>!fields.includes(n))]:fields;
+  },[fields,bucketDefs]);
   // Defensive: ensure numFields is always a Set
   // Priority: 1) DB numFields  2) config.values (admin-declared)  3) auto-detect
   numFields = useMemo(()=>{
@@ -1817,6 +1874,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
   const adHocRef=useRef(null);
   const [filtersSaved,setFiltersSaved]=useState(false);
   const [colFiltersSaved,setColFiltersSaved]=useState(false);
+  const [editingValFilter,setEditingValFilter]=useState(null); // value field being edited, or "__add__"
   const result=useMemo(()=>runPivot(data,config,filters),[config,data,filters]);
   // For chart: apply pivotFilters on top of base result so chart matches table view
   const chartResult=useMemo(()=>{
@@ -2202,6 +2260,74 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
         </div>
       )}
 
+      {/* Value conditions — per-metric row filters (conditional aggregation) */}
+      {(config.values||[]).some(v=>v.valueFilter)&&(
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap",
+          padding:"8px 12px",background:"rgba(217,119,6,0.06)",border:"1px solid rgba(217,119,6,0.25)",borderRadius:8}}>
+          <span style={{fontSize:12,color:"#b45309",fontWeight:700}}>Value conditions:</span>
+          {(config.values||[]).filter(v=>v.valueFilter).map(v=>(
+            <div key={v.field} style={{display:"inline-flex",alignItems:"center",gap:5,
+              background:T.bgCard,border:"1px solid rgba(217,119,6,0.35)",borderRadius:14,padding:"3px 4px 3px 10px",fontSize:11}}>
+              <span style={{fontWeight:700,color:T.text}}>{v.agg} of {v.field}</span>
+              <span style={{color:T.textMd}}>counts only rows where</span>
+              <span style={{fontWeight:700,color:"#b45309"}}>{describeValueFilter(v.valueFilter)}</span>
+              {onValueFilterChange&&(
+                <button onClick={()=>setEditingValFilter(p=>p===v.field?null:v.field)}
+                  title="Change this condition"
+                  style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:T.primary,padding:"0 4px"}}>
+                  ✏
+                </button>
+              )}
+            </div>
+          ))}
+          {onValueFilterChange&&(config.values||[]).some(v=>!v.valueFilter)&&(
+            <button onClick={()=>setEditingValFilter(p=>p==="__add__"?null:"__add__")}
+              style={{fontSize:11,color:T.primary,background:"none",border:"1px dashed "+T.primary,
+                borderRadius:12,padding:"3px 10px",cursor:"pointer",fontWeight:600}}>
+              + Add condition
+            </button>
+          )}
+        </div>
+      )}
+      {onValueFilterChange&&!(config.values||[]).some(v=>v.valueFilter)&&(config.values||[]).length>0&&(
+        <div style={{marginBottom:14}}>
+          <button onClick={()=>setEditingValFilter(p=>p==="__add__"?null:"__add__")}
+            style={{fontSize:11,color:T.textMd,background:"none",border:"1px dashed "+T.border,
+              borderRadius:12,padding:"3px 10px",cursor:"pointer"}}>
+            + Add value condition
+          </button>
+        </div>
+      )}
+      {editingValFilter&&onValueFilterChange&&(()=>{
+        const isAdd=editingValFilter==="__add__";
+        const target=isAdd?null:(config.values||[]).find(v=>v.field===editingValFilter);
+        const choices=isAdd?(config.values||[]).filter(v=>!v.valueFilter):[];
+        return(
+          <div style={{marginBottom:14,padding:"10px 12px",background:T.bgStat,border:"1px solid "+T.border,borderRadius:8}}>
+            {isAdd?(
+              <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:11}}>
+                <span style={{color:T.textMd}}>Add a condition to which metric?</span>
+                {choices.map(v=>(
+                  <button key={v.field} onClick={()=>setEditingValFilter(v.field)}
+                    style={{fontSize:11,padding:"3px 10px",background:T.bgCard,border:"1px solid "+T.border,
+                      borderRadius:12,cursor:"pointer",color:T.text,fontWeight:600}}>
+                    {v.agg} of {v.field}
+                  </button>
+                ))}
+                <button onClick={()=>setEditingValFilter(null)}
+                  style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:T.textMd,marginLeft:"auto"}}>✕</button>
+              </div>
+            ):target?(
+              <>
+                <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:5}}>Condition for {target.agg} of {target.field}</div>
+                <ValueFilterRow field={target.field} vf={target.valueFilter} allFields={fields}
+                  onSave={vf=>{onValueFilterChange(target.field,vf);setEditingValFilter(null);}}
+                  onClose={()=>setEditingValFilter(null)}/>
+              </>
+            ):null}
+          </div>
+        );
+      })()}
 
       {viewMode==="table"
         ? <PivotTable result={result} numFmt={numFmt}
@@ -3806,15 +3932,22 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     });
   }
 
+  // Bucket dimensions are derived fields — usable in R/C/F just like real columns
+  const bucketedRows=useMemo(()=>dataset?applyBuckets(dataset.rows,config&&config.buckets):[],[dataset,config&&config.buckets]);
+  const builderFields=useMemo(()=>{
+    if(!dataset) return [];
+    const names=((config&&config.buckets)||[]).map(b=>b&&b.name).filter(Boolean);
+    return [...dataset.fields,...names.filter(n=>!dataset.fields.includes(n))];
+  },[dataset,config&&config.buckets]);
   // Apply saved tab filters to the live preview so it matches what users see
   const previewFilters=adminGlobalFilters[adminFilterKey(activeTabIdx)]||{};
-  const preview=useMemo(()=>dataset&&config?runPivot(dataset.rows,config,previewFilters):[],[dataset,config,previewFilters]);
+  const preview=useMemo(()=>dataset&&config?runPivot(bucketedRows,config,previewFilters):[],[dataset,bucketedRows,config,previewFilters]);
   const fieldStatus=useMemo(()=>{
     if (!dataset||!config) return {};
     const z={};
-    dataset.fields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.some(x=>x.field===f)};});
+    builderFields.forEach(f=>{z[f]={rows:config.rows.includes(f),cols:config.columns.includes(f),vals:config.values.some(v=>v.field===f),filters:config.filters.includes(f),card:cardFields.some(x=>x.field===f)};});
     return z;
-  },[dataset,config,cardFields]);
+  },[dataset,builderFields,config,cardFields]);
 
   const isSubAdminUser = currentRole === 'subadmin_user';
   const isSuperAdmin   = currentRole === 'admin';
@@ -3939,7 +4072,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           {/* Left panel */}
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
-              <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:2}}>{dataset.fields.length} fields · {dataset.rows.length.toLocaleString()} rows</div>
+              <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:2}}>{builderFields.length} fields · {dataset.rows.length.toLocaleString()} rows</div>
               <div style={{fontSize:11,color:T.textMd,marginBottom:10}}>{config.name}</div>
 
               {/* Legend */}
@@ -3952,7 +4085,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               </div>
 
               <div style={{borderTop:"0.5px solid "+T.border,paddingTop:10,display:"flex",flexDirection:"column",maxHeight:520,overflowY:"auto"}}>
-                <FieldSearch fields={dataset.fields} numFields={effectiveNumFields}
+                <FieldSearch fields={builderFields} numFields={effectiveNumFields}
                   fieldStatus={fieldStatus} onToggle={toggleField}
                   onToggleType={f=>toggleFieldType(f)} onToggleCard={f=>toggleCard(f)}/>
               </div>
@@ -4018,7 +4151,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             </div>
             <ZoneBox label="Values (V) — multiple metrics, drag to reorder" color={T.tagV} zone="values"
               fields={config.values} isValues onAggChange={setAgg} onValueFilterChange={setValueFilter}
-              allFields={dataset?dataset.fields:[]}
+              allFields={builderFields}
               onRemove={f=>removeFrom("values",f)} onReorder={(a,b)=>reorderInZone("values",a,b)}
               emptyMsg="Press V on a numeric field"/>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
@@ -4034,6 +4167,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 })}
                 emptyMsg="Press K on any field"/>
             </div>
+            <BucketEditor buckets={config.buckets||[]} numericFields={[...effectiveNumFields]}
+              onChange={bs=>setConfig(c=>({...c,buckets:bs}))}/>
             <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
               <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Live Preview</div>
               <PivotTable result={preview} numFmt="Cr"/>
@@ -4047,6 +4182,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
           <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
           <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
           <Report key={"preview_"+(activeReportId||"new")} config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
+            onValueFilterChange={setValueFilter}
             externalFilters={adminGlobalFilters[adminFilterKey(activeTabIdx)]}
             externalPivotFilters={adminGlobalPivotFilters[adminFilterKey(activeTabIdx)]}
             onExternalFiltersChange={(f)=>setAdminGlobalFilters(prev=>({...prev,[adminFilterKey(activeTabIdx)]:f}))}
@@ -4486,6 +4622,98 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove,onReorder}
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Bucket editor — turn a numeric field into a categorical range dimension ─────
+function BucketEditor({buckets,numericFields,onChange}){
+  const [openIdx,setOpenIdx]=useState(null);
+  const upd=(i,patch)=>onChange(buckets.map((b,j)=>j===i?{...b,...patch}:b));
+  const updRange=(i,ri,patch)=>upd(i,{ranges:buckets[i].ranges.map((r,j)=>j===ri?{...r,...patch}:r)});
+  const addBucket=()=>{
+    const f=numericFields[0]||"";
+    onChange([...buckets,{name:(f||"Field")+" Bucket",field:f,
+      ranges:[{from:"",to:100000,label:""},{from:100000,to:300000,label:""},{from:300000,to:"",label:""}]}]);
+    setOpenIdx(buckets.length);
+  };
+  return(
+    <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+        <div style={{fontWeight:700,fontSize:13,color:T.primary}}>Buckets — group a numeric field into ranges</div>
+        <button onClick={addBucket} disabled={!numericFields.length}
+          style={{fontSize:11,background:T.primary,color:T.textLt,border:"none",borderRadius:5,
+            padding:"3px 10px",cursor:numericFields.length?"pointer":"not-allowed",opacity:numericFields.length?1:0.4,fontWeight:600}}>
+          + New bucket
+        </button>
+      </div>
+      <div style={{fontSize:11,color:T.textMd,marginBottom:10}}>
+        Creates a new dimension you can drop into Rows, Columns or Filters — e.g. group Net Due into 1–3L, 3–5L, 5–10L.
+        Ranges are <strong>from ≤ value &lt; to</strong>; leave From blank for "below" and To blank for "and above".
+      </div>
+      {buckets.length===0&&<div style={{fontSize:11,color:T.textMd,fontStyle:"italic"}}>No buckets defined.</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {buckets.map((b,i)=>(
+          <div key={i} style={{border:"1px solid "+T.border,borderRadius:8,padding:10,background:T.bgAlt}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+              <input value={b.name} onChange={e=>upd(i,{name:e.target.value})}
+                placeholder="Bucket field name"
+                style={{flex:"1 1 150px",minWidth:120,padding:"4px 8px",border:"1px solid "+T.border,borderRadius:5,
+                  fontSize:12,fontWeight:600,background:T.bgCard,color:T.text,outline:"none"}}/>
+              <span style={{fontSize:11,color:T.textMd}}>from</span>
+              <select value={b.field} onChange={e=>upd(i,{field:e.target.value})}
+                style={{padding:"4px 6px",border:"1px solid "+T.border,borderRadius:5,fontSize:11,background:T.bgCard,color:T.text,maxWidth:150}}>
+                {!numericFields.includes(b.field)&&<option value={b.field}>{b.field||"— pick field —"}</option>}
+                {numericFields.map(f=><option key={f} value={f}>{f}</option>)}
+              </select>
+              <button onClick={()=>setOpenIdx(p=>p===i?null:i)}
+                style={{fontSize:11,padding:"3px 9px",background:"none",border:"1px solid "+T.border,
+                  borderRadius:5,cursor:"pointer",color:T.primary}}>
+                {openIdx===i?"Hide":`${b.ranges.length} range${b.ranges.length===1?"":"s"}`}
+              </button>
+              <button onClick={()=>{onChange(buckets.filter((_,j)=>j!==i));setOpenIdx(null);}}
+                style={{fontSize:13,background:"none",border:"none",cursor:"pointer",color:T.danger,padding:"0 4px"}}>×</button>
+            </div>
+            {openIdx===i&&(
+              <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:5}}>
+                <div style={{display:"flex",gap:5,fontSize:10,color:T.textMd,fontWeight:600,paddingLeft:2}}>
+                  <span style={{width:90}}>From (≥)</span>
+                  <span style={{width:90}}>To (&lt;)</span>
+                  <span style={{flex:1}}>Label (blank = auto)</span>
+                </div>
+                {b.ranges.map((r,ri)=>(
+                  <div key={ri} style={{display:"flex",gap:5,alignItems:"center"}}>
+                    <input type="number" value={r.from??""} onChange={e=>updRange(i,ri,{from:e.target.value})}
+                      placeholder="—"
+                      style={{width:90,padding:"3px 6px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}/>
+                    <input type="number" value={r.to??""} onChange={e=>updRange(i,ri,{to:e.target.value})}
+                      placeholder="—"
+                      style={{width:90,padding:"3px 6px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}/>
+                    <input value={r.label||""} onChange={e=>updRange(i,ri,{label:e.target.value})}
+                      placeholder={bucketRangeLabel(r,ri)}
+                      style={{flex:1,minWidth:80,padding:"3px 6px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}/>
+                    <button onClick={()=>upd(i,{ranges:b.ranges.filter((_,j)=>j!==ri)})}
+                      style={{background:"none",border:"none",cursor:"pointer",color:T.textMd,fontSize:13,padding:"0 3px"}}>×</button>
+                  </div>
+                ))}
+                <button onClick={()=>{
+                    const last=b.ranges[b.ranges.length-1];
+                    const nextFrom=last&&last.to!==""&&last.to!=null?last.to:"";
+                    upd(i,{ranges:[...b.ranges,{from:nextFrom,to:"",label:""}]});
+                  }}
+                  style={{alignSelf:"flex-start",fontSize:11,padding:"3px 10px",background:"none",
+                    border:"1px dashed "+T.primary,borderRadius:5,cursor:"pointer",color:T.primary,marginTop:2}}>
+                  + Add range
+                </button>
+                <div style={{fontSize:10,color:T.textMd,marginTop:2}}>
+                  Values outside every range fall into "zz. Other"; blank/non-numeric into "(blank)".
+                  Auto labels are numbered (01., 02., …) so buckets sort in the order you define them.
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
