@@ -213,20 +213,41 @@ function bucketRangeLabel(r, i) {
   const lo = r.from === "" || r.from == null ? null : Number(r.from);
   const hi = r.to === "" || r.to == null ? null : Number(r.to);
   const s = n => Math.abs(n) >= 1e7 ? (n/1e7)+"Cr" : Math.abs(n) >= 1e5 ? (n/1e5)+"L" : Math.abs(n) >= 1e3 ? (n/1e3)+"K" : String(n);
-  const body = lo == null ? "< "+s(hi) : hi == null ? s(lo)+"+" : s(lo)+"–"+s(hi);
-  return String(i+1).padStart(2,"0")+". "+body;
+  if (lo == null && hi == null) return "All";
+  return lo == null ? "< "+s(hi) : hi == null ? s(lo)+"+" : s(lo)+"–"+s(hi);
+}
+
+// Ordered label list for a bucket — drives pivot sort order so buckets appear
+// in the sequence the user defined rather than alphabetically.
+function bucketLabels(b) {
+  if (!b || !Array.isArray(b.ranges)) return [];
+  const out = b.ranges.map((r, i) => bucketRangeLabel(r, i));
+  out.push(b.otherLabel || "Other");
+  if (b.blankAsZero === false) out.push(b.blankLabel || "(blank)");
+  return out;
+}
+
+function bucketOrderMap(buckets) {
+  const m = {};
+  (buckets || []).forEach(b => { if (b && b.name) m[b.name] = bucketLabels(b); });
+  return m;
 }
 
 function bucketValueFor(raw, b) {
-  const n = toNum(raw);
-  if (isNaN(n)) return b.blankLabel || "(blank)";
+  let n = toNum(raw);
+  // Accounting data leaves "nothing due" cells empty — treat blank as 0 unless
+  // the user explicitly wants a separate (blank) bucket.
+  if (isNaN(n)) {
+    if (b.blankAsZero === false) return b.blankLabel || "(blank)";
+    n = 0;
+  }
   for (let i = 0; i < b.ranges.length; i++) {
     const r = b.ranges[i];
     const lo = r.from === "" || r.from == null ? -Infinity : Number(r.from);
     const hi = r.to   === "" || r.to   == null ?  Infinity : Number(r.to);
     if (n >= lo && n < hi) return bucketRangeLabel(r, i);
   }
-  return b.otherLabel || "zz. Other";
+  return b.otherLabel || "Other";
 }
 
 function applyBuckets(data, buckets) {
@@ -295,10 +316,23 @@ function runPivot(data,config,filters) {
       const k=rFs.map(f=>String(r[f]||"").trim().toLowerCase()).join("\0");
       if (!seenRk.has(k)) seenRk.set(k,rFs.map(f=>String(r[f]||"").trim()));
     });
-    const rowKeys=[...seenRk.values()].sort((a,b)=>a.join("\0").localeCompare(b.join("\0")));
+    // Bucket dimensions sort by definition order, everything else alphabetically
+    const bOrder=bucketOrderMap(config.buckets);
+    const cmpVal=(f,a,b)=>{
+      const ord=bOrder[f];
+      if(ord){
+        const ia=ord.indexOf(String(a).trim()),ib=ord.indexOf(String(b).trim());
+        if(ia!==-1||ib!==-1) return (ia===-1?ord.length:ia)-(ib===-1?ord.length:ib);
+      }
+      return String(a).localeCompare(String(b));
+    };
+    const rowKeys=[...seenRk.values()].sort((a,b)=>{
+      for(let i=0;i<rFs.length;i++){const c=cmpVal(rFs[i],a[i],b[i]);if(c)return c;}
+      return 0;
+    });
     const colValSeen=new Map();
     if(cF) filtered.forEach(r=>{const raw=String(r[cF]||"").trim();const k=raw.toLowerCase();if(!colValSeen.has(k))colValSeen.set(k,raw);});
-    const colVals=cF?[...colValSeen.values()].sort():[];
+    const colVals=cF?[...colValSeen.values()].sort((a,b)=>cmpVal(cF,a,b)):[];
     const norm=s=>String(s||"").trim().toLowerCase();
     const cells={};
     rowKeys.forEach(rk=>{
@@ -310,7 +344,15 @@ function runPivot(data,config,filters) {
     });
     const colTotals={};
     colVals.forEach(cv=>{colTotals[cv]=compute(filtered.filter(r=>norm(r[cF])===norm(cv)));});
-    return{rowKeys,colVals,cells,colTotals,grandTotals:compute(filtered),rFs,cF,vals,count:filtered.length};
+    // Drop rows / columns that are entirely zero. With a value condition applied
+    // these are groups where nothing met the condition, and they carry no info.
+    const allZero=arr=>!arr||arr.every(n=>!n);
+    let outRowKeys=rowKeys,outColVals=colVals;
+    if(config.hideEmptyRows!==false)
+      outRowKeys=rowKeys.filter(rk=>!allZero(cells[rk.join("\0")]["__total__"]));
+    if(cF&&config.hideEmptyCols!==false)
+      outColVals=colVals.filter(cv=>!outRowKeys.every(rk=>allZero(cells[rk.join("\0")][cv])));
+    return{rowKeys:outRowKeys,colVals:outColVals,cells,colTotals,grandTotals:compute(filtered),rFs,cF,vals,count:filtered.length};
   } catch(e){return{error:e.message};}
 }
 
@@ -4168,7 +4210,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 emptyMsg="Press K on any field"/>
             </div>
             <BucketEditor buckets={config.buckets||[]} numericFields={[...effectiveNumFields]}
-              onChange={bs=>setConfig(c=>({...c,buckets:bs}))}/>
+              onChange={bs=>setConfig(c=>({...c,buckets:bs}))}
+              hideEmptyRows={config.hideEmptyRows!==false} hideEmptyCols={config.hideEmptyCols!==false}
+              onHideEmptyChange={(k,v)=>setConfig(c=>({...c,[k]:v}))}/>
             <div style={{background:T.bgCard,border:"1px solid "+T.border,borderRadius:10,padding:14}}>
               <div style={{fontWeight:700,fontSize:13,color:T.primary,marginBottom:12}}>Live Preview</div>
               <PivotTable result={preview} numFmt="Cr"/>
@@ -4627,13 +4671,13 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove,onReorder}
 }
 
 // ── Bucket editor — turn a numeric field into a categorical range dimension ─────
-function BucketEditor({buckets,numericFields,onChange}){
+function BucketEditor({buckets,numericFields,onChange,hideEmptyRows,hideEmptyCols,onHideEmptyChange}){
   const [openIdx,setOpenIdx]=useState(null);
   const upd=(i,patch)=>onChange(buckets.map((b,j)=>j===i?{...b,...patch}:b));
   const updRange=(i,ri,patch)=>upd(i,{ranges:buckets[i].ranges.map((r,j)=>j===ri?{...r,...patch}:r)});
   const addBucket=()=>{
     const f=numericFields[0]||"";
-    onChange([...buckets,{name:(f||"Field")+" Bucket",field:f,
+    onChange([...buckets,{name:(f||"Field")+" Bucket",field:f,blankAsZero:true,
       ranges:[{from:"",to:100000,label:""},{from:100000,to:300000,label:""},{from:300000,to:"",label:""}]}]);
     setOpenIdx(buckets.length);
   };
@@ -4705,15 +4749,42 @@ function BucketEditor({buckets,numericFields,onChange}){
                     border:"1px dashed "+T.primary,borderRadius:5,cursor:"pointer",color:T.primary,marginTop:2}}>
                   + Add range
                 </button>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.text,cursor:"pointer",marginTop:4}}>
+                  <input type="checkbox" checked={b.blankAsZero!==false}
+                    onChange={e=>upd(i,{blankAsZero:e.target.checked})}
+                    style={{accentColor:T.primary,cursor:"pointer"}}/>
+                  Treat blank / non-numeric cells as 0
+                  <span style={{color:T.textMd}}>(uncheck to show them as a separate "(blank)" bucket)</span>
+                </label>
                 <div style={{fontSize:10,color:T.textMd,marginTop:2}}>
-                  Values outside every range fall into "zz. Other"; blank/non-numeric into "(blank)".
-                  Auto labels are numbered (01., 02., …) so buckets sort in the order you define them.
+                  Values outside every range fall into "Other". Buckets sort in the order listed here,
+                  not alphabetically — drag ranges by editing the numbers above.
                 </div>
               </div>
             )}
           </div>
         ))}
       </div>
+      {onHideEmptyChange&&(
+        <div style={{borderTop:"0.5px solid "+T.border,marginTop:10,paddingTop:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:4}}>Empty rows &amp; columns</div>
+          <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.text,cursor:"pointer",marginBottom:3}}>
+            <input type="checkbox" checked={hideEmptyRows}
+              onChange={e=>onHideEmptyChange("hideEmptyRows",e.target.checked)}
+              style={{accentColor:T.primary,cursor:"pointer"}}/>
+            Hide rows where every value is 0
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.text,cursor:"pointer"}}>
+            <input type="checkbox" checked={hideEmptyCols}
+              onChange={e=>onHideEmptyChange("hideEmptyCols",e.target.checked)}
+              style={{accentColor:T.primary,cursor:"pointer"}}/>
+            Hide columns where every value is 0
+          </label>
+          <div style={{fontSize:10,color:T.textMd,marginTop:4}}>
+            With a value condition applied, these are the groups where nothing met the condition.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
