@@ -396,7 +396,7 @@ function runPivot(data,config,filters) {
 // shows its own print dialog — printers, duplex and paper come straight from the
 // OS driver list. The clone is flattened (scroll boxes opened, sticky headers
 // unstuck, controls dropped) and then scaled so the widest content fits the page.
-const PX_PER_MM=96/25.4, PRINT_MARGIN_MM=10;
+const PX_PER_MM=96/25.4, PRINT_MARGIN_MM=8;
 const A4_PORTRAIT_PX =(210-2*PRINT_MARGIN_MM)*PX_PER_MM;
 const A4_LANDSCAPE_PX=(297-2*PRINT_MARGIN_MM)*PX_PER_MM;
 
@@ -445,13 +445,16 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
   d.title=String(title).replace(/[<>&]/g,"");           // becomes the PDF filename
   d.body.style.cssText="margin:0;background:#fff;font-family:system-ui,sans-serif";
 
+  // Block, not inline-block: the wrapper is given the page width so the report's
+  // width:100% blocks and the pivot's minWidth:100% actually expand to fill it.
+  // Shrink-to-fit was why narrow reports printed against the left margin.
   const wrap=d.createElement("div");
-  wrap.style.cssText="display:inline-block;transform-origin:top left;background:#fff";
+  wrap.style.cssText="display:block;transform-origin:top left;background:#fff";
   if(title||subtitle){
     const h=d.createElement("div");
-    h.style.cssText="margin-bottom:10px;font-family:system-ui,sans-serif";
-    h.innerHTML="<div style='font-size:16px;font-weight:700;color:#5C2D1A'></div>"+
-                "<div style='font-size:11px;color:#7a6a5f;margin-top:2px'></div>";
+    h.style.cssText="margin:0 0 10px;padding-bottom:6px;border-bottom:2px solid #5C2D1A;font-family:system-ui,sans-serif";
+    h.innerHTML="<div style='font-size:17px;font-weight:700;color:#5C2D1A'></div>"+
+                "<div style='font-size:11px;color:#7a6a5f;margin-top:3px'></div>";
     h.children[0].textContent=title;
     h.children[1].textContent=(subtitle?subtitle+"  ·  ":"")+"Printed "+new Date().toLocaleString();
     wrap.appendChild(h);
@@ -460,12 +463,20 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
   d.body.appendChild(wrap);
 
   setTimeout(()=>{
-    const cw=Math.max(wrap.scrollWidth,wrap.offsetWidth,1);
-    const landscape=cw>A4_PORTRAIT_PX;                   // widen the page before shrinking type
-    const avail=landscape?A4_LANDSCAPE_PX:A4_PORTRAIT_PX;
+    // Lay the content out at the page width and see whether it still overflows.
+    // Only then is the paper turned, and only then is anything shrunk — so the
+    // common case prints at natural type size, edge to edge.
+    const layoutAt=w=>{wrap.style.width=w+"px";return Math.max(wrap.scrollWidth,w);};
+    let landscape=false, avail=A4_PORTRAIT_PX;
+    let cw=layoutAt(avail);
+    if(cw>avail+1){                                      // too wide — turn the paper first
+      landscape=true; avail=A4_LANDSCAPE_PX; cw=layoutAt(avail);
+    }
     const scale=Math.min(1,avail/cw);
-    wrap.style.width=cw+"px";
-    wrap.style.transform="scale("+scale+")";
+    if(scale<1){
+      wrap.style.width=cw+"px";                          // let it be its true width, then shrink
+      wrap.style.transform="scale("+scale+")";
+    } else wrap.style.transform="none";
     // A transformed box keeps its unscaled layout height — pin the real height so
     // the print run does not tack on blank trailing pages.
     d.body.style.height=Math.ceil(wrap.scrollHeight*scale)+"px";
@@ -4188,7 +4199,10 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     <div style={{minHeight:"100vh",background:T.bgPage,fontFamily:"system-ui,sans-serif"}}>
       <AppHeader role={roleLabel} onLogout={onLogout} printRef={printRef}
         printTitle={(config&&config.name)||"ReportHub"}
-        printSubtitle={TABS.find(t=>t[0]===tab)?.[1]||""}>
+        printSubtitle={[
+          config&&config.tabs&&config.tabs[activeTabIdx]&&config.tabs[activeTabIdx].name,
+          TABS.find(t=>t[0]===tab)?.[1],
+        ].filter(Boolean).join("  ·  ")}>
         {toast&&<span style={{fontSize:12,color:T.textLt,background:"rgba(45,106,79,0.5)",padding:"4px 12px",borderRadius:6,fontWeight:500,border:"1px solid rgba(45,106,79,0.6)"}}>{toast}</span>}
         {dataset&&config&&<button onClick={doSave} disabled={apiLoading} style={{padding:"6px 14px",background:"rgba(255,255,255,0.15)",color:T.textLt,border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,cursor:apiLoading?"wait":"pointer",fontSize:12,fontWeight:600,opacity:apiLoading?0.6:1}}>
           {apiLoading?"Saving…":"Save Report"}
