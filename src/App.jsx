@@ -88,14 +88,49 @@ function fmtNum(n, agg, field, fmtKey, isCurrency) {
 }
 
 // ── CDN loader ─────────────────────────────────────────────────────────────────
+// Loaded on demand and cached per library, with mirrors. The old version had no
+// onerror handler, so a blocked or slow CDN left window.XLSX null forever with no
+// diagnostic — and it only ran inside AdminView, so exports in the user view
+// could never work at all. loadLib() is callable from anywhere.
+const CDN_SOURCES={
+  XLSX:["https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
+        "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+        "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"],
+  Papa:["https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js",
+        "https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js",
+        "https://unpkg.com/papaparse@5.4.1/papaparse.min.js"],
+};
+const _libPromises={};
+function loadLib(name) {
+  if (window[name]) return Promise.resolve(window[name]);
+  if (_libPromises[name]) return _libPromises[name];
+  const urls=CDN_SOURCES[name]||[];
+  const p=new Promise((resolve,reject)=>{
+    let i=0;
+    const tryNext=()=>{
+      if (window[name]) return resolve(window[name]);
+      if (i>=urls.length) return reject(new Error(name+" could not be downloaded — the CDN may be blocked on this network"));
+      const s=document.createElement("script");
+      s.src=urls[i++]; s.async=true;
+      s.onload =()=>window[name]?resolve(window[name]):tryNext();
+      s.onerror=()=>{s.remove();tryNext();};
+      document.head.appendChild(s);
+    };
+    tryNext();
+  });
+  _libPromises[name]=p;
+  p.catch(()=>{ if(_libPromises[name]===p) delete _libPromises[name]; }); // allow a retry
+  return p;
+}
+
 function useLibs() {
-  const [libs, setLibs] = useState({ XLSX:null, Papa:null });
+  const [libs, setLibs] = useState({ XLSX:window.XLSX||null, Papa:window.Papa||null });
   useEffect(() => {
-    const st = { XLSX:window.XLSX||null, Papa:window.Papa||null };
-    const tick = () => { if (st.XLSX && st.Papa) setLibs({XLSX:st.XLSX, Papa:st.Papa}); };
-    tick();
-    if (!st.XLSX) { const s=document.createElement("script"); s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; s.onload=()=>{st.XLSX=window.XLSX;tick();}; document.head.appendChild(s); }
-    if (!st.Papa) { const s=document.createElement("script"); s.src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"; s.onload=()=>{st.Papa=window.Papa;tick();}; document.head.appendChild(s); }
+    let alive=true;
+    Promise.allSettled([loadLib("XLSX"),loadLib("Papa")]).then(()=>{
+      if(alive) setLibs({XLSX:window.XLSX||null, Papa:window.Papa||null});
+    });
+    return()=>{alive=false;};
   }, []);
   return libs;
 }
@@ -447,9 +482,22 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
 }
 
 // ── Export helpers ─────────────────────────────────────────────────────────────
-function exportExcel(result, config, numFmt) {
-  if (!window.XLSX) { alert("XLSX library not loaded yet. Please wait a moment."); return; }
-  const XLSX = window.XLSX;
+// Excel forbids : \ / ? * [ ] in sheet names and caps them at 31 chars; a report
+// called "Vendor MIS: Q1" used to throw inside book_append_sheet.
+const safeSheetName=n=>String(n||"Report").replace(/[\\/?*[\]:]/g,"-").slice(0,31).trim()||"Report";
+const safeFileName =n=>String(n||"Report").replace(/[\\/:*?"<>|]/g,"-").trim()||"Report";
+
+function downloadCSV(rows, filename) {
+  const esc=v=>{const s=v==null?"":String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  const csv="﻿"+rows.map(r=>r.map(esc).join(",")).join("\r\n"); // BOM so Excel reads UTF-8
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8;"}));
+  a.download=filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
+}
+
+function buildPivotAoA(result, config) {
   const {rowKeys, colVals, cells, grandTotals, colTotals, rFs, cF, vals} = result;
   const hasGroups = colVals.length > 0;
   // Build header rows
@@ -485,10 +533,27 @@ function exportExcel(result, config, numFmt) {
     vals.forEach((_,vi) => gtRow.push(grandTotals[vi]||0));
   }
   rows.push(gtRow);
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, config.name.slice(0,31));
-  XLSX.writeFile(wb, config.name.replace(/[\/:*?"<>|]/g,"-") + ".xlsx");
+  return rows;
+}
+
+async function exportExcel(result, config, numFmt) {
+  if (!result || result.error) { alert("Nothing to export yet."); return; }
+  let rows;
+  try { rows = buildPivotAoA(result, config); }
+  catch(e){ alert("Could not build the export: "+(e.message||e)); return; }
+  const name = (config && config.name) || "Report";
+  try {
+    const XLSX = await loadLib("XLSX");
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, safeSheetName(name));
+    XLSX.writeFile(wb, safeFileName(name) + ".xlsx");
+  } catch(e) {
+    // Writer unavailable (offline, blocked CDN) — CSV opens in Excel just fine
+    downloadCSV(rows, safeFileName(name) + ".csv");
+    alert("The Excel writer could not be downloaded"+(e&&e.message?" ("+e.message+")":"")+
+          ".\n\nA CSV file was downloaded instead — it opens directly in Excel.");
+  }
 }
 
 function exportPDF(config) {
@@ -5923,19 +5988,19 @@ function CollabDataView({report,currentUser,currentRole,onClose}) {
           approvedSum,
         ];
       })];
-      // Use XLSX if available
-      if(window.XLSX){
-        const ws=window.XLSX.utils.aoa_to_sheet(sheetRows);
-        const wb=window.XLSX.utils.book_new();
-        window.XLSX.utils.book_append_sheet(wb,ws,"Workflow");
-        window.XLSX.writeFile(wb,`${report.name}_${activeCycle.period_label}_workflow.xlsx`);
-      } else {
-        // Fallback CSV
-        const csv=sheetRows.map(r=>r.map(c=>String(c).includes(",")?`"${c}"`:c).join(",")).join("\n");
-        const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);
-        a.download=`${report.name}_${activeCycle.period_label}_workflow.csv`;a.click();
+      const base=safeFileName(`${report.name}_${activeCycle.period_label}_workflow`);
+      try{
+        const XLSX=await loadLib("XLSX");
+        const ws=XLSX.utils.aoa_to_sheet(sheetRows);
+        const wb=XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb,ws,"Workflow");
+        XLSX.writeFile(wb,base+".xlsx");
+        setMsg("✓ Downloaded");
+      }catch(e){
+        downloadCSV(sheetRows,base+".csv");
+        setMsg("✓ Downloaded as CSV (Excel writer unavailable)");
       }
-      setMsg("✓ Downloaded");setTimeout(()=>setMsg(""),2000);
+      setTimeout(()=>setMsg(""),2500);
     }catch(e){setMsg("Error: "+e.message);}
   };
 
