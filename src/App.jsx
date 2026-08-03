@@ -4398,6 +4398,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
                 emptyMsg="Press K on any field"/>
             </div>
             <BucketEditor buckets={config.buckets||[]} numericFields={[...effectiveNumFields]}
+              rows={dataset?dataset.rows:null}
               onChange={bs=>setConfig(c=>({...c,buckets:bs}))}
               hideEmptyRows={config.hideEmptyRows!==false} hideEmptyCols={config.hideEmptyCols!==false}
               onHideEmptyChange={(k,v)=>setConfig(c=>({...c,[k]:v}))}/>
@@ -4861,7 +4862,20 @@ function ZoneEditor({label,color,hint,fields,allFields,onAdd,onRemove,onReorder}
 }
 
 // ── Bucket editor — turn a numeric field into a categorical range dimension ─────
-function BucketEditor({buckets,numericFields,onChange,hideEmptyRows,hideEmptyCols,onHideEmptyChange}){
+function BucketEditor({buckets,numericFields,onChange,hideEmptyRows,hideEmptyCols,onHideEmptyChange,rows}){
+  // Live row counts per range. Makes it obvious at a glance that a bucket is
+  // working, and surfaces money stranded in "Other" when the top range is closed.
+  const counts=useMemo(()=>{
+    if(!rows||!rows.length) return {};
+    const out={};
+    (buckets||[]).forEach((b,i)=>{
+      if(!b||!b.field||!Array.isArray(b.ranges)||!b.ranges.length) return;
+      const c={};
+      rows.forEach(r=>{const l=bucketValueFor(r[b.field],b);c[l]=(c[l]||0)+1;});
+      out[i]=c;
+    });
+    return out;
+  },[rows,buckets]);
   const [openIdx,setOpenIdx]=useState(null);
   const upd=(i,patch)=>onChange(buckets.map((b,j)=>j===i?{...b,...patch}:b));
   const updRange=(i,ri,patch)=>upd(i,{ranges:buckets[i].ranges.map((r,j)=>j===ri?{...r,...patch}:r)});
@@ -4914,6 +4928,7 @@ function BucketEditor({buckets,numericFields,onChange,hideEmptyRows,hideEmptyCol
                   <span style={{width:90}}>From (≥)</span>
                   <span style={{width:90}}>To (&lt;)</span>
                   <span style={{flex:1}}>Label (blank = auto)</span>
+                  {counts[i]&&<span style={{width:64,textAlign:"right"}}>Rows</span>}
                 </div>
                 {b.ranges.map((r,ri)=>(
                   <div key={ri} style={{display:"flex",gap:5,alignItems:"center"}}>
@@ -4926,10 +4941,32 @@ function BucketEditor({buckets,numericFields,onChange,hideEmptyRows,hideEmptyCol
                     <input value={r.label||""} onChange={e=>updRange(i,ri,{label:e.target.value})}
                       placeholder={bucketRangeLabel(r,ri)}
                       style={{flex:1,minWidth:80,padding:"3px 6px",border:"1px solid "+T.border,borderRadius:4,fontSize:11,background:T.bgCard,color:T.text}}/>
+                    {counts[i]&&(
+                      <span style={{width:64,textAlign:"right",fontSize:10,fontWeight:600,
+                        color:(counts[i][bucketRangeLabel(r,ri)]||0)?T.text:T.textMd}}>
+                        {(counts[i][bucketRangeLabel(r,ri)]||0).toLocaleString()}
+                      </span>
+                    )}
                     <button onClick={()=>upd(i,{ranges:b.ranges.filter((_,j)=>j!==ri)})}
                       style={{background:"none",border:"none",cursor:"pointer",color:T.textMd,fontSize:13,padding:"0 3px"}}>×</button>
                   </div>
                 ))}
+                {counts[i]&&(counts[i][b.otherLabel||"Other"]||counts[i][b.blankLabel||"(blank)"])&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4,padding:"6px 8px",
+                    background:"rgba(186,117,23,0.09)",border:"1px solid rgba(186,117,23,0.3)",borderRadius:6}}>
+                    {!!counts[i][b.otherLabel||"Other"]&&(
+                      <div style={{fontSize:10,color:T.warning,fontWeight:600}}>
+                        ⚠ {counts[i][b.otherLabel||"Other"].toLocaleString()} row(s) fall outside every range → "Other".
+                        <span style={{fontWeight:400}}> Clear the last "To" to make the top range open-ended.</span>
+                      </div>
+                    )}
+                    {!!counts[i][b.blankLabel||"(blank)"]&&(
+                      <div style={{fontSize:10,color:T.warning,fontWeight:600}}>
+                        {counts[i][b.blankLabel||"(blank)"].toLocaleString()} row(s) are blank / non-numeric → "(blank)".
+                      </div>
+                    )}
+                  </div>
+                )}
                 <button onClick={()=>{
                     const last=b.ranges[b.ranges.length-1];
                     const nextFrom=last&&last.to!==""&&last.to!=null?last.to:"";
