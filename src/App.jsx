@@ -325,6 +325,13 @@ function matchValueFilter(row, vf) {
   return true;
 }
 
+// A pivot column is the tuple of values across every configured column field.
+// Joined with an unprintable separator so a value containing " / " can't forge
+// a level boundary; with a single column field the key is just the value.
+const COL_SEP=String.fromCharCode(1);
+const colKeyParts=k=>String(k).split(COL_SEP);
+const colKeyLabel=k=>colKeyParts(k).join(" / ");
+
 function runPivot(data,config,filters) {
   try {
     // Filter by ALL active filters — configured slicers AND card filter clicks
@@ -342,7 +349,12 @@ function runPivot(data,config,filters) {
       }
       return Array.isArray(s)&&s.some(v=>v.trim().toLowerCase()===String(row[f]||"").trim().toLowerCase());
     }));
-    const rFs=config.rows, cF=config.columns[0], vals=config.values;
+    // Columns nest: every configured column field becomes a header level, and a
+    // leaf column is the tuple of their values joined by COL_SEP. With one field
+    // the key is just the value, so old reports and old saved colExcluded/colOrder
+    // entries keep working untouched.
+    const rFs=config.rows, cFs=(config.columns||[]).filter(Boolean), vals=config.values;
+    const cF=cFs[0];
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>{const rows=v.valueFilter?sub.filter(r=>matchValueFilter(r,v.valueFilter)):sub;return doAgg(rows,v.field,v.agg);});
     // Normalise: group case-insensitively + trim, keep first-seen original case for display
@@ -365,29 +377,40 @@ function runPivot(data,config,filters) {
       for(let i=0;i<rFs.length;i++){const c=cmpVal(rFs[i],a[i],b[i]);if(c)return c;}
       return 0;
     });
-    const colValSeen=new Map();
-    if(cF) filtered.forEach(r=>{const raw=String(r[cF]||"").trim();const k=raw.toLowerCase();if(!colValSeen.has(k))colValSeen.set(k,raw);});
-    const colVals=cF?[...colValSeen.values()].sort((a,b)=>cmpVal(cF,a,b)):[];
     const norm=s=>String(s||"").trim().toLowerCase();
+    // Distinct leaf paths across all column levels, sorted level by level so the
+    // outer header groups stay contiguous (a prerequisite for the colspan maths).
+    const colPathSeen=new Map();
+    if(cFs.length) filtered.forEach(r=>{
+      const path=cFs.map(f=>String(r[f]||"").trim());
+      const k=path.map(norm).join(COL_SEP);
+      if(!colPathSeen.has(k)) colPathSeen.set(k,path);
+    });
+    const colPaths=[...colPathSeen.values()].sort((a,b)=>{
+      for(let i=0;i<cFs.length;i++){const c=cmpVal(cFs[i],a[i],b[i]);if(c)return c;}
+      return 0;
+    });
+    const matchPath=(r,p)=>cFs.every((f,i)=>norm(r[f])===norm(p[i]));
     const cells={};
     rowKeys.forEach(rk=>{
       const rkStr=rk.join("\0");
       const rd=filtered.filter(r=>rFs.every((f,i)=>norm(r[f])===norm(rk[i])));
       cells[rkStr]={};
-      colVals.forEach(cv=>{cells[rkStr][cv]=compute(rd.filter(r=>norm(r[cF])===norm(cv)));});
+      colPaths.forEach(p=>{cells[rkStr][p.join(COL_SEP)]=compute(rd.filter(r=>matchPath(r,p)));});
       cells[rkStr]["__total__"]=compute(rd);
     });
     const colTotals={};
-    colVals.forEach(cv=>{colTotals[cv]=compute(filtered.filter(r=>norm(r[cF])===norm(cv)));});
+    colPaths.forEach(p=>{colTotals[p.join(COL_SEP)]=compute(filtered.filter(r=>matchPath(r,p)));});
     // Drop rows / columns that are entirely zero. With a value condition applied
     // these are groups where nothing met the condition, and they carry no info.
     const allZero=arr=>!arr||arr.every(n=>!n);
-    let outRowKeys=rowKeys,outColVals=colVals;
+    let outRowKeys=rowKeys,outPaths=colPaths;
     if(config.hideEmptyRows!==false)
       outRowKeys=rowKeys.filter(rk=>!allZero(cells[rk.join("\0")]["__total__"]));
-    if(cF&&config.hideEmptyCols!==false)
-      outColVals=colVals.filter(cv=>!outRowKeys.every(rk=>allZero(cells[rk.join("\0")][cv])));
-    return{rowKeys:outRowKeys,colVals:outColVals,cells,colTotals,grandTotals:compute(filtered),rFs,cF,vals,count:filtered.length};
+    if(cFs.length&&config.hideEmptyCols!==false)
+      outPaths=colPaths.filter(p=>{const k=p.join(COL_SEP);return !outRowKeys.every(rk=>allZero(cells[rk.join("\0")][k]));});
+    return{rowKeys:outRowKeys,colVals:outPaths.map(p=>p.join(COL_SEP)),colPaths:outPaths,
+      cells,colTotals,grandTotals:compute(filtered),rFs,cF,cFs,vals,count:filtered.length};
   } catch(e){return{error:e.message};}
 }
 
@@ -517,7 +540,7 @@ function buildPivotAoA(result, config) {
   // Column header row
   const colHdr = [...rFs.map(()=>"")];
   if (hasGroups) {
-    colVals.forEach(cv => vals.forEach(v => colHdr.push(cv + " - " + v.field)));
+    colVals.forEach(cv => vals.forEach(v => colHdr.push(colKeyLabel(cv) + " - " + v.field)));
     vals.forEach(v => colHdr.push("Total - " + v.field));
   } else {
     vals.forEach(v => colHdr.push(v.field + " (" + v.agg + ")"));
@@ -851,9 +874,12 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
   },[data,activeFilters]);
 
   const normD=s=>String(s||"").trim().toLowerCase();
+  // colVal is the leaf path across every column level, so match each level
+  const colFieldList=(target.cFs&&target.cFs.length)?target.cFs:(cF?[cF]:[]);
+  const colValParts=colVal&&colVal!=="__total__"?colKeyParts(colVal):null;
   const baseRows=useMemo(()=>filteredBySlicers.filter(row=>
     rFs.every((f,i)=>normD(row[f])===normD(rowKey[i]))&&
-    (!cF||!colVal||colVal==="__total__"||normD(row[cF])===normD(colVal))
+    (!colValParts||colFieldList.every((f,i)=>normD(row[f])===normD(colValParts[i])))
   ),[filteredBySlicers,target]);
   // Apply per-column filters
   const rows=useMemo(()=>baseRows.filter(row=>
@@ -1390,7 +1416,7 @@ function ChartView({result, numFmt, chartType, onChartTypeChange}) {
       colVals.forEach(cv => {
         vals.forEach((v, vi) => {
           out.values.push({
-            label: (nV > 1) ? `${cv} — ${v.field}` : String(cv),
+            label: (nV > 1) ? `${colKeyLabel(cv)} — ${v.field}` : colKeyLabel(cv),
             value: ((cellRow[cv] || [])[vi]) || 0,
           });
         });
@@ -1715,6 +1741,25 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
       Too many combinations ({rowKeys.length.toLocaleString()} rows x {Math.max(orderedColVals.length,1)} cols). Add filters or choose fields with fewer unique values.
     </div>
   );
+  // Column header levels — one row per configured column field. Consecutive leaf
+  // columns sharing a prefix merge into a single spanning cell, which is why
+  // runPivot sorts the leaf paths level by level.
+  const cFs=(result&&result.cFs&&result.cFs.length)?result.cFs:(cF?[cF]:[]);
+  const nLevels=cFs.length;
+  const colLevels=(()=>{
+    if(!hasGroups||!nLevels) return [];
+    const paths=orderedColVals.map(k=>colKeyParts(k));
+    return Array.from({length:nLevels},(_,L)=>{
+      const row=[];
+      paths.forEach(p=>{
+        const key=p.slice(0,L+1).join(COL_SEP);
+        const prev=row[row.length-1];
+        if(prev&&prev.key===key) prev.span++;
+        else row.push({key,label:p[L],span:1});
+      });
+      return row;
+    });
+  })();
   // In no-group mode, orderedVals may differ from vals (user reordered).
   // vi must reference the ORIGINAL vals index (cells are stored in original order).
   const origIdx=v=>vals.findIndex(ov=>ov.field===v.field);
@@ -1760,13 +1805,15 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
       </div>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
         <thead style={{position:"sticky",top:0,zIndex:5}}>
-          {hasGroups&&(
-            <tr>
-              {rFs.map((rf,ri)=>(
-                <th key={ri} style={{...thStyle,textAlign:"left",borderBottom:nV>1?"0.5px solid "+T.borderHd:"1px solid "+T.borderHd,
-                  position:"relative",background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
+          {hasGroups&&colLevels.map((lvl,L)=>(
+            <tr key={"lvl"+L}>
+              {L===0&&rFs.map((rf,ri)=>(
+                <th key={ri} rowSpan={nLevels+1}
+                  style={{...thStyle,textAlign:"left",borderBottom:"1px solid "+T.borderHd,
+                  position:"relative",verticalAlign:"bottom",
+                  background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
-                    <span>{rf}{ri===0&&cF?<span style={{opacity:0.6,fontWeight:400}}> / {cF}</span>:null}</span>
+                    <span>{rf}{ri===0&&cFs.length?<span style={{opacity:0.6,fontWeight:400}}> / {cFs.join(" / ")}</span>:null}</span>
                     {onPivotFilter&&<DrillColFilter
                       field={rf}
                       data={result.rowKeys.map(rk=>({[rf]:rk[ri]}))}
@@ -1779,27 +1826,40 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                   <ResizeHandle onMouseDown={e=>startColResize("row_"+ri,e)}/>
                 </th>
               ))}
-              {[...orderedColVals.map(cv=>({cv,isT:false})),{cv:"Total",isT:true}].map((g,i)=>(
-                <th key={i} colSpan={nV}
-                  draggable={!!onColReorder&&!g.isT}
-                  onDragStart={e=>colDragStart(e,g.cv)}
-                  onDragOver={e=>colDragOver(e,g.cv)}
-                  onDragLeave={()=>setDragOverCol(null)}
-                  onDrop={e=>colDrop(e,g.cv)}
+              {lvl.map((g,i)=>{
+                // Drag-to-reorder only makes sense with a single level — moving an
+                // inner group across its parent would break the nesting.
+                const canDrag=!!onColReorder&&nLevels===1;
+                return(
+                  <th key={i} colSpan={g.span*nV}
+                    draggable={canDrag}
+                    onDragStart={e=>canDrag&&colDragStart(e,g.key)}
+                    onDragOver={e=>canDrag&&colDragOver(e,g.key)}
+                    onDragLeave={()=>setDragOverCol(null)}
+                    onDrop={e=>canDrag&&colDrop(e,g.key)}
+                    style={{...thStyle,textAlign:"center",borderLeft:"1px solid "+T.borderHd,
+                      borderBottom:(L<nLevels-1||nV>1)?"0.5px solid "+T.borderHd:"1px solid "+T.borderHd,
+                      background:dragOverCol===g.key?"rgba(200,146,42,0.3)":T.bgHeader,
+                      cursor:canDrag?"grab":"default",
+                      outline:dragOverCol===g.key?"2px dashed "+T.accent:"none",
+                      transition:"background 0.1s",fontSize:L===0?12:11,opacity:L===0?1:0.92,
+                      position:"relative",width:colWidths["grp_"+g.key]||undefined,minWidth:60}}>
+                    {canDrag&&<span style={{opacity:0.4,fontSize:9,marginRight:4}}>⋮</span>}
+                    {g.label||"(blank)"}
+                    {canDrag&&<ResizeHandle onMouseDown={e=>startColResize("grp_"+g.key,e)}/>}
+                  </th>
+                );
+              })}
+              {L===0&&(
+                <th rowSpan={nLevels} colSpan={nV}
                   style={{...thStyle,textAlign:"center",borderLeft:"1px solid "+T.borderHd,
                     borderBottom:nV>1?"0.5px solid "+T.borderHd:"1px solid "+T.borderHd,
-                    background:g.isT?"#3D1A0E":dragOverCol===g.cv?"rgba(200,146,42,0.3)":T.bgHeader,
-                    cursor:onColReorder&&!g.isT?"grab":"default",
-                    outline:dragOverCol===g.cv?"2px dashed "+T.accent:"none",
-                    transition:"background 0.1s",
-                    position:"relative",width:colWidths["grp_"+g.cv]||undefined,minWidth:60}}>
-                  {!g.isT&&onColReorder&&<span style={{opacity:0.4,fontSize:9,marginRight:4}}>⋮</span>}
-                  {g.cv}
-                  {!g.isT&&<ResizeHandle onMouseDown={e=>startColResize("grp_"+g.cv,e)}/>}
+                    background:"#3D1A0E",minWidth:60}}>
+                  Total
                 </th>
-              ))}
+              )}
             </tr>
-          )}
+          ))}
           <tr>
             {!hasGroups?rFs.map((rf,ri)=>(
               <th key={ri} style={{...thStyle,textAlign:"left",position:"relative",
@@ -1817,7 +1877,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                 </div>
                 <ResizeHandle onMouseDown={e=>startColResize("row_"+ri,e)}/>
               </th>
-            )):<th colSpan={rFs.length} style={{...thStyle}}></th>}
+            )):null/* row-label headers span every level via rowSpan above */}
             {flatCols.map((col,i)=>{
               const v=effectiveVals[col.vi];
               const isDraggable=!!onColReorder&&!hasGroups&&effectiveVals.length>1;
@@ -2415,7 +2475,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
                   borderRadius:6,background:excludedColVals.size>0?"rgba(92,45,26,0.08)":"none",
                   cursor:"pointer",fontSize:12,
                   color:excludedColVals.size>0?T.primary:T.text,fontWeight:excludedColVals.size>0?600:400}}>
-                {result.cF} {excludedColVals.size>0?"("+excludedColVals.size+" hidden)":""}
+                {(result.cFs||[result.cF]).filter(Boolean).join(" / ")} {excludedColVals.size>0?"("+excludedColVals.size+" hidden)":""}
                 <span style={{fontSize:9,color:T.textMd,marginLeft:2}}>▾</span>
               </button>
               {showColFilter&&(
@@ -2424,7 +2484,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
                   minWidth:240,boxShadow:"0 6px 24px rgba(92,45,26,0.2)",overflow:"hidden"}}>
                   <div style={{padding:"8px 12px",borderBottom:"0.5px solid "+T.border,
                     display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                    <span style={{fontSize:11,fontWeight:700,color:T.primary}}>{result.cF} columns</span>
+                    <span style={{fontSize:11,fontWeight:700,color:T.primary}}>{(result.cFs||[result.cF]).filter(Boolean).join(" / ")} columns</span>
                     <div style={{display:"flex",gap:10}}>
                       <button onClick={()=>updateExcluded(new Set())}
                         style={{fontSize:10,color:T.textMd,background:"none",border:"none",cursor:"pointer"}}>All</button>
@@ -2435,7 +2495,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
                   <div style={{maxHeight:250,overflowY:"auto"}}>
                     {result.colVals.map(cv=>{
                       const hidden=excludedColVals.has(cv);
-                      const label=(cv===""||cv===null||cv===undefined)?"(blank)":String(cv);
+                      const label=(cv===""||cv===null||cv===undefined)?"(blank)":colKeyLabel(cv);
                       return(
                         <label key={String(cv)} style={{display:"flex",alignItems:"center",gap:8,
                           padding:"6px 12px",cursor:"pointer",
@@ -2556,7 +2616,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
             onPivotFilter={(idx,sel)=>setPivotFilters(p=>({...p,[idx]:sel}))}
             pivotSort={pivotSort}
             onPivotSort={setPivotSort}
-            onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,metricLabel:label})}/>
+            onDrillDown={(rowKey,colVal,label)=>setDrill({rowKey,colVal,rFs:result.rFs,cF:result.cF,cFs:result.cFs,metricLabel:label})}/>
         : <ChartView result={chartResult} numFmt={numFmt} chartType={chartType} onChartTypeChange={setChartType}/>
       }
 
@@ -4375,7 +4435,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               <ZoneBox label="Row Labels (R)" color={T.tagR} zone="rows" fields={config.rows}
                 onRemove={f=>removeFrom("rows",f)} onReorder={(a,b)=>reorderInZone("rows",a,b)}
                 emptyMsg="Press R on any field"/>
-              <ZoneBox label="Column Labels (C)" color={T.tagC} zone="columns" fields={config.columns}
+              <ZoneBox label="Column Labels (C) — nests top to bottom" color={T.tagC} zone="columns" fields={config.columns}
                 onRemove={f=>removeFrom("columns",f)} onReorder={(a,b)=>reorderInZone("columns",a,b)}
                 emptyMsg="Press C on any field"/>
             </div>
