@@ -378,6 +378,53 @@ function runPivot(data,config,filters) {
       return 0;
     });
     const norm=s=>String(s||"").trim().toLowerCase();
+    const distinctVals=f=>{
+      const seen=new Map();
+      filtered.forEach(r=>{const raw=String(r[f]||"").trim();const k=raw.toLowerCase();if(!seen.has(k))seen.set(k,raw);});
+      return [...seen.values()].sort((a,b)=>cmpVal(f,a,b));
+    };
+
+    // ── Split mode: each measure carries its own column split ───────────────────
+    // Net Due across Net Due's ranges next to Adv Paid across Adv Paid's ranges,
+    // rather than the cartesian product of both dimensions. Takes precedence over
+    // config.columns because the two layouts cannot coexist in one header.
+    if (vals.some(v=>v.splitBy)) {
+      const specs=[];
+      vals.forEach((v,vi)=>{
+        if(v.splitBy) distinctVals(v.splitBy).forEach(sv=>
+          specs.push({vi,field:v.splitBy,val:sv,key:vi+COL_SEP+sv}));
+        else specs.push({vi,field:null,val:null,key:vi+COL_SEP});
+      });
+      const cellFor=(sub,sp)=>{
+        const v=vals[sp.vi];
+        let rows2=sp.field?sub.filter(r=>norm(r[sp.field])===norm(sp.val)):sub;
+        if(v.valueFilter) rows2=rows2.filter(r=>matchValueFilter(r,v.valueFilter));
+        const arr=vals.map(()=>0);            // keep the per-value array shape
+        arr[sp.vi]=doAgg(rows2,v.field,v.agg);
+        return arr;
+      };
+      const cellsS={};
+      rowKeys.forEach(rk=>{
+        const rkStr=rk.join("\0");
+        const rd=filtered.filter(r=>rFs.every((f,i)=>norm(r[f])===norm(rk[i])));
+        cellsS[rkStr]={};
+        specs.forEach(sp=>{cellsS[rkStr][sp.key]=cellFor(rd,sp);});
+        cellsS[rkStr]["__total__"]=compute(rd);
+      });
+      const colTotalsS={};
+      specs.forEach(sp=>{colTotalsS[sp.key]=cellFor(filtered,sp);});
+      const allZeroS=a=>!a||a.every(n=>!n);
+      let outRK=rowKeys;
+      if(config.hideEmptyRows!==false)
+        outRK=rowKeys.filter(rk=>!allZeroS(cellsS[rk.join("\0")]["__total__"]));
+      let outSpecs=specs;
+      if(config.hideEmptyCols!==false)
+        outSpecs=specs.filter(sp=>!outRK.every(rk=>!(cellsS[rk.join("\0")][sp.key]||[])[sp.vi]));
+      return{rowKeys:outRK,colVals:outSpecs.map(s=>s.key),colSpecs:outSpecs,splitMode:true,
+        cells:cellsS,colTotals:colTotalsS,grandTotals:compute(filtered),
+        rFs,cF:null,cFs:[],vals,count:filtered.length};
+    }
+
     // Distinct leaf paths across all column levels, sorted level by level so the
     // outer header groups stay contiguous (a prerequisite for the colspan maths).
     const colPathSeen=new Map();
@@ -1744,14 +1791,27 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   // Column header levels — one row per configured column field. Consecutive leaf
   // columns sharing a prefix merge into a single spanning cell, which is why
   // runPivot sorts the leaf paths level by level.
+  const splitMode=!!(result&&result.splitMode);
+  const specByKey=(()=>{
+    const m={};
+    ((result&&result.colSpecs)||[]).forEach(sp=>{m[sp.key]=sp;});
+    return m;
+  })();
   const cFs=(result&&result.cFs&&result.cFs.length)?result.cFs:(cF?[cF]:[]);
-  const nLevels=cFs.length;
+  // Header prefix stack above the bottom row. In split mode that is the measure
+  // name; otherwise it is the tuple of column-dimension values.
+  const leafPrefixes=splitMode
+    ? orderedColVals.map(k=>{const sp=specByKey[k];return [sp?(vals[sp.vi]||{}).field||"":""];})
+    : orderedColVals.map(k=>colKeyParts(k));
+  const nLevels=splitMode?1:cFs.length;
+  // Split mode gives each leaf exactly one column (its own measure); the shared
+  // dimension repeats every measure under each leaf.
+  const spanMult=splitMode?1:nV;
   const colLevels=(()=>{
     if(!hasGroups||!nLevels) return [];
-    const paths=orderedColVals.map(k=>colKeyParts(k));
     return Array.from({length:nLevels},(_,L)=>{
       const row=[];
-      paths.forEach(p=>{
+      leafPrefixes.forEach(p=>{
         const key=p.slice(0,L+1).join(COL_SEP);
         const prev=row[row.length-1];
         if(prev&&prev.key===key) prev.span++;
@@ -1763,11 +1823,14 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   // In no-group mode, orderedVals may differ from vals (user reordered).
   // vi must reference the ORIGINAL vals index (cells are stored in original order).
   const origIdx=v=>vals.findIndex(ov=>ov.field===v.field);
-  const flatCols=hasGroups
+  const flatCols=splitMode
+    ?[...orderedColVals.map(k=>{const sp=specByKey[k];return{key:k,vi:sp?sp.vi:0,isTotal:false,label:sp?sp.val:""};}),
+      ...vals.map((v,vi)=>                                 ({key:"__total__",vi,isTotal:true}))]
+    :hasGroups
     ?[...orderedColVals.flatMap(cv=>orderedVals.map((v,_i)=>({key:cv,   vi:origIdx(v),isTotal:false}))),
       ...orderedVals.map((v,_i)=>                          ({key:"__total__",vi:origIdx(v),isTotal:true }))]
     :orderedVals.map((v,_i)=>                              ({key:"__total__",vi:origIdx(v),isTotal:false}));
-  const effectiveVals=hasGroups?vals:orderedVals;
+  const effectiveVals=(hasGroups||splitMode)?vals:orderedVals;
   const getCell=(s,col)=>((cells[s]||{})[col.key]||effectiveVals.map(()=>0))[col.vi]||0;
   // Grand totals from VISIBLE rows only (plain computation — no hook needed here)
   const visibleGrandTotals=sortedRowKeys.map
@@ -1787,7 +1850,8 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
     return out;
   })();
   const getGrand=col=>(col.key==="__total__"?visibleGrandTotals:(visibleColTotals[col.key]||effectiveVals.map(()=>0)))[col.vi]||0;
-  const lBorder=i=>i===0||flatCols[i-1].key!==flatCols[i].key?"1px solid "+T.borderDk:"none";
+  const grpOf=c=>splitMode?String(c.vi)+(c.isTotal?"T":""):c.key;
+  const lBorder=i=>i===0||grpOf(flatCols[i-1])!==grpOf(flatCols[i])?"1px solid "+T.borderDk:"none";
   const thStyle={padding:"10px 14px",fontWeight:700,fontSize:12,color:T.textLt,whiteSpace:"nowrap",background:T.bgHeader,borderBottom:"1px solid "+T.borderHd};
   // Column group drag handlers (only active when onColReorder is provided)
   const colDragStart=(e,cv)=>{if(onColReorder)e.dataTransfer.setData("pivotCol",cv);};
@@ -1801,7 +1865,10 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   return(
     <div style={{overflowX:"auto",overflowY:"auto",maxHeight:"70vh",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
       <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border}}>
-        {onDrillDown?"Click any cell to drill down  ·  ":""}{onColReorder?"Drag column headers to reorder":""}
+        {onDrillDown?"Click any cell to drill down  ·  ":""}{onColReorder&&!splitMode&&nLevels<=1?"Drag column headers to reorder  ·  ":""}
+        {splitMode
+          ? "Each measure split by its own "+[...new Set(vals.filter(v=>v.splitBy).map(v=>v.splitBy))].join(", ")
+          : cFs.length?"Columns: "+cFs.join("  →  "):""}
       </div>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
         <thead style={{position:"sticky",top:0,zIndex:5}}>
@@ -1813,7 +1880,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                   position:"relative",verticalAlign:"bottom",
                   background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
-                    <span>{rf}{ri===0&&cFs.length?<span style={{opacity:0.6,fontWeight:400}}> / {cFs.join(" / ")}</span>:null}</span>
+                    <span>{rf}</span>
                     {onPivotFilter&&<DrillColFilter
                       field={rf}
                       data={result.rowKeys.map(rk=>({[rf]:rk[ri]}))}
@@ -1831,7 +1898,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                 // inner group across its parent would break the nesting.
                 const canDrag=!!onColReorder&&nLevels===1;
                 return(
-                  <th key={i} colSpan={g.span*nV}
+                  <th key={i} colSpan={g.span*spanMult}
                     draggable={canDrag}
                     onDragStart={e=>canDrag&&colDragStart(e,g.key)}
                     onDragOver={e=>canDrag&&colDragOver(e,g.key)}
@@ -1902,7 +1969,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                     {isDraggable&&<span style={{opacity:0.4,fontSize:9}}>{"⋮"}</span>}
                     <div style={{textAlign:"right"}}>
                       <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
-                        {v.field}
+                        {splitMode&&!col.isTotal?(col.label||"(blank)"):v.field}
                         <button onClick={e=>{e.stopPropagation();setValSort(vs=>vs&&vs.field===v.field?(vs.dir==="asc"?{field:v.field,dir:"desc"}:null):{field:v.field,dir:"desc"});}}
                           title={"Sort by "+v.field}
                           style={{background:"none",border:"none",cursor:"pointer",color:"rgba(245,239,230,0.7)",fontSize:11,padding:"0 2px",lineHeight:1,flexShrink:0}}>
@@ -1910,7 +1977,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                         </button>
                       </div>
                       <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
-                      {v.valueFilter&&<div style={{fontSize:9,opacity:0.7,marginTop:1,color:"#f59e0b"}}>⊕ {v.valueFilter.field}{v.valueFilter.val!==undefined?" "+v.valueFilter.op+" "+v.valueFilter.val:""}</div>}
+                      {!splitMode&&v.valueFilter&&<div style={{fontSize:9,opacity:0.7,marginTop:1,color:"#f59e0b"}}>⊕ {v.valueFilter.field}{v.valueFilter.val!==undefined?" "+v.valueFilter.op+" "+v.valueFilter.val:""}</div>}
                     </div>
                   </div>
                   <ResizeHandle onMouseDown={e=>startColResize("val_"+v.field,e)}/>
@@ -2705,7 +2772,7 @@ function ValueFilterRow({field, vf, allFields, onSave, onClose}) {
 }
 
 // ── Zone box with drag-and-drop reorder ────────────────────────────────────────
-function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValueFilterChange, onReorder, zone, emptyMsg, allFields}) {
+function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValueFilterChange, onValueSplitChange, splitFields, onReorder, zone, emptyMsg, allFields}) {
   const [openFilterFor, setOpenFilterFor]=useState(null);
   return(
     <div style={{background:T.bgCard,border:"1px solid "+color+"50",borderRadius:10,padding:12}}>
@@ -2723,6 +2790,15 @@ function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValue
                   style={{fontSize:10,border:"none",background:"transparent",color,cursor:"pointer",padding:"0 2px",marginLeft:3}}>
                   {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
                 </select>
+                {onValueSplitChange&&!!(splitFields||[]).length&&(
+                  <select value={v.splitBy||""} onChange={e=>onValueSplitChange(v.field,e.target.value)}
+                    title="Split this measure into its own columns (e.g. its own bucket ranges)"
+                    style={{fontSize:10,border:"1px solid "+color+"60",borderRadius:4,background:v.splitBy?color:"transparent",
+                      color:v.splitBy?"#fff":color,cursor:"pointer",padding:"0 2px",marginLeft:3,maxWidth:110}}>
+                    <option value="">split: none</option>
+                    {(splitFields||[]).map(f=><option key={f} value={f}>{f}</option>)}
+                  </select>
+                )}
                 {onValueFilterChange&&<button
                   onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===v.field?null:v.field);}}
                   title={v.valueFilter?"Edit row condition":"Add row condition (count/sum only matching rows)"}
@@ -4198,6 +4274,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 
   function setAgg(field,agg,isCurrency){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,agg,...(isCurrency!==undefined?{isCurrency}:{})}:v)}));}
   function setValueFilter(field,vf){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,valueFilter:vf||undefined}:v)}));}
+  function setValueSplit(field,sb){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,splitBy:sb||undefined}:v)}));}
 
   function reorderInZone(zone,fromField,toField) {
     setConfig(c=>{
@@ -4441,6 +4518,7 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             </div>
             <ZoneBox label="Values (V) — multiple metrics, drag to reorder" color={T.tagV} zone="values"
               fields={config.values} isValues onAggChange={setAgg} onValueFilterChange={setValueFilter}
+              onValueSplitChange={setValueSplit} splitFields={builderFields.filter(f=>!effectiveNumFields.has(f))}
               allFields={builderFields}
               onRemove={f=>removeFrom("values",f)} onReorder={(a,b)=>reorderInZone("values",a,b)}
               emptyMsg="Press V on a numeric field"/>
