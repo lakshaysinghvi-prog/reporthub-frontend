@@ -349,11 +349,9 @@ function runPivot(data,config,filters) {
       }
       return Array.isArray(s)&&s.some(v=>v.trim().toLowerCase()===String(row[f]||"").trim().toLowerCase());
     }));
-    // Columns nest: every configured column field becomes a header level, and a
-    // leaf column is the tuple of their values joined by COL_SEP. With one field
-    // the key is just the value, so old reports and old saved colExcluded/colOrder
-    // entries keep working untouched.
-    const rFs=config.rows, cFs=(config.columns||[]).filter(Boolean), vals=config.values;
+    // One column dimension. COL_SEP still joins the (single-element) path so the
+    // key is just the value, keeping old colExcluded/colOrder entries valid.
+    const rFs=config.rows, cFs=(config.columns||[]).filter(Boolean).slice(0,1), vals=config.values;
     const cF=cFs[0];
     if (!rFs.length||!vals.length) return null;
     const compute=sub=>vals.map(v=>{const rows=v.valueFilter?sub.filter(r=>matchValueFilter(r,v.valueFilter)):sub;return doAgg(rows,v.field,v.agg);});
@@ -2780,34 +2778,50 @@ function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValue
         {label}
         <span style={{fontSize:9,opacity:0.6,fontWeight:400}}>drag to reorder</span>
       </div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:6,minHeight:30}}>
+      {/* Metrics get a full-width row each: a pill cannot hold five controls
+          without them overlapping. Plain dimensions stay as compact pills. */}
+      <div style={{display:"flex",flexDirection:isValues?"column":"row",flexWrap:isValues?"nowrap":"wrap",gap:6,minHeight:30}}>
         {isValues ? fields.map(v=>(
-          <div key={v.field} style={{display:"flex",flexDirection:"column",flex:"0 0 auto",maxWidth:"100%"}}>
-            <DragTag fieldName={v.field} color={color} zone={zone}
-              onRemove={()=>onRemove(v.field)} onReorder={onReorder}
-              extra={<>
-                <select value={v.agg} onChange={e=>onAggChange&&onAggChange(v.field,e.target.value)}
-                  style={{fontSize:10,border:"none",background:"transparent",color,cursor:"pointer",padding:"0 2px",marginLeft:3}}>
-                  {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+          <div key={v.field}>
+            <div draggable
+              onDragStart={e=>{e.dataTransfer.setData("text/plain",zone+":"+v.field);e.dataTransfer.effectAllowed="move";}}
+              onDragOver={e=>e.preventDefault()}
+              onDrop={e=>{e.preventDefault();const p=e.dataTransfer.getData("text/plain").split(":");
+                if(p[0]===zone&&p[1]!==v.field)onReorder&&onReorder(p[1],v.field);}}
+              style={{display:"flex",alignItems:"center",gap:6,cursor:"grab",
+                background:"rgba(0,0,0,0.05)",borderRadius:8,padding:"5px 7px"}}>
+              <span style={{opacity:0.45,fontSize:10,flexShrink:0}}>⠿</span>
+              <span title={v.field}
+                style={{flex:"1 1 auto",minWidth:40,fontSize:12,fontWeight:600,color,
+                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.field}</span>
+              <select value={v.agg} onChange={e=>onAggChange&&onAggChange(v.field,e.target.value)}
+                title="Aggregation"
+                style={{fontSize:10,border:"1px solid "+color+"50",borderRadius:4,background:T.bgCard,
+                  color,cursor:"pointer",padding:"1px 2px",flexShrink:0}}>
+                {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+              </select>
+              {onValueSplitChange&&!!(splitFields||[]).length&&(
+                <select value={v.splitBy||""} onChange={e=>onValueSplitChange(v.field,e.target.value)}
+                  title="Give this metric its own columns — e.g. its own bucket ranges"
+                  style={{fontSize:10,border:"1px solid "+(v.splitBy?color:color+"50"),borderRadius:4,
+                    background:v.splitBy?color:T.bgCard,color:v.splitBy?"#fff":T.textMd,
+                    cursor:"pointer",padding:"1px 2px",maxWidth:120,flexShrink:1,minWidth:0}}>
+                  <option value="">split: none</option>
+                  {(splitFields||[]).map(f=><option key={f} value={f}>{f}</option>)}
                 </select>
-                {onValueSplitChange&&!!(splitFields||[]).length&&(
-                  <select value={v.splitBy||""} onChange={e=>onValueSplitChange(v.field,e.target.value)}
-                    title="Split this measure into its own columns (e.g. its own bucket ranges)"
-                    style={{fontSize:10,border:"1px solid "+color+"60",borderRadius:4,background:v.splitBy?color:"transparent",
-                      color:v.splitBy?"#fff":color,cursor:"pointer",padding:"0 2px",marginLeft:3,maxWidth:110}}>
-                    <option value="">split: none</option>
-                    {(splitFields||[]).map(f=><option key={f} value={f}>{f}</option>)}
-                  </select>
-                )}
-                {onValueFilterChange&&<button
-                  onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===v.field?null:v.field);}}
-                  title={v.valueFilter?"Edit row condition":"Add row condition (count/sum only matching rows)"}
-                  style={{background:v.valueFilter?"#d97706":"none",border:"1px solid "+(v.valueFilter?"#d97706":color+"80"),
-                    borderRadius:4,cursor:"pointer",fontSize:9,padding:"0 4px",marginLeft:2,
-                    color:v.valueFilter?"#fff":color,lineHeight:"16px",flexShrink:0}}>
-                  {v.valueFilter?"⊕ filter":"⊕"}
-                </button>}
-              </>}/>
+              )}
+              {onValueFilterChange&&<button
+                onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===v.field?null:v.field);}}
+                title={v.valueFilter?"Edit row condition":"Add row condition (aggregate only matching rows)"}
+                style={{background:v.valueFilter?"#d97706":T.bgCard,border:"1px solid "+(v.valueFilter?"#d97706":color+"50"),
+                  borderRadius:4,cursor:"pointer",fontSize:10,padding:"1px 6px",
+                  color:v.valueFilter?"#fff":color,flexShrink:0}}>
+                ⊕
+              </button>}
+              <button onClick={e=>{e.stopPropagation();onRemove(v.field);}} title="Remove"
+                style={{background:"none",border:"none",cursor:"pointer",color:T.textMd,fontSize:14,
+                  lineHeight:1,padding:"0 2px",flexShrink:0}}>×</button>
+            </div>
             {openFilterFor===v.field&&onValueFilterChange&&(
               <ValueFilterRow field={v.field} vf={v.valueFilter} allFields={allFields||[]}
                 onSave={vf=>{onValueFilterChange(v.field,vf);setOpenFilterFor(null);}}
@@ -4261,7 +4275,9 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
     setConfig(c=>{
       let rows=[...c.rows],cols=[...c.columns],vals=[...c.values],filters=[...c.filters];
       if (zone==="rows"){if(rows.includes(field))rows=rows.filter(f=>f!==field);else{cols=cols.filter(f=>f!==field);rows=[...rows,field];}}
-      else if(zone==="columns"){if(cols.includes(field))cols=cols.filter(f=>f!==field);else{rows=rows.filter(f=>f!==field);cols=[...cols,field];}}
+      // Columns is a single slot: a second field used to produce a cartesian
+      // product of the two dimensions, which is unreadable. Adding replaces.
+      else if(zone==="columns"){if(cols.includes(field))cols=[];else{rows=rows.filter(f=>f!==field);cols=[field];}}
       else if(zone==="values"){if(vals.some(v=>v.field===field))vals=vals.filter(v=>v.field!==field);else vals=[...vals,{field,agg:"sum"}];}
       else if(zone==="filters"){if(filters.includes(field))filters=filters.filter(f=>f!==field);else filters=[...filters,field];}
       return{...c,rows,columns:cols,values:vals,filters};
@@ -4512,11 +4528,11 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
               <ZoneBox label="Row Labels (R)" color={T.tagR} zone="rows" fields={config.rows}
                 onRemove={f=>removeFrom("rows",f)} onReorder={(a,b)=>reorderInZone("rows",a,b)}
                 emptyMsg="Press R on any field"/>
-              <ZoneBox label="Column Labels (C) — nests top to bottom" color={T.tagC} zone="columns" fields={config.columns}
+              <ZoneBox label="Column Labels (C)" color={T.tagC} zone="columns" fields={(config.columns||[]).slice(0,1)}
                 onRemove={f=>removeFrom("columns",f)} onReorder={(a,b)=>reorderInZone("columns",a,b)}
                 emptyMsg="Press C on any field"/>
             </div>
-            <ZoneBox label="Values (V) — multiple metrics, drag to reorder" color={T.tagV} zone="values"
+            <ZoneBox label="Values (V)" color={T.tagV} zone="values"
               fields={config.values} isValues onAggChange={setAgg} onValueFilterChange={setValueFilter}
               onValueSplitChange={setValueSplit} splitFields={builderFields.filter(f=>!effectiveNumFields.has(f))}
               allFields={builderFields}
