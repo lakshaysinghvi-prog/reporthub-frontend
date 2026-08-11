@@ -70,6 +70,14 @@ const NUM_FORMATS = [
 ];
 
 const AGGS=["sum","avg","count","min","max","general"];
+// Text fields can only be counted — summing a vendor name is meaningless.
+const TEXT_AGGS=["count","countDistinct"];
+const aggsFor=isNum=>isNum?AGGS:TEXT_AGGS;
+// Values may repeat a field (sum AND count of the same column), so entries carry
+// their own id. Older configs have none — fall back to the field name.
+const vid=v=>(v&&v.id)||(v&&v.field)||"";
+let _vidSeq=0;
+const newVid=f=>f+"#"+(Date.now().toString(36))+(_vidSeq++).toString(36);
 const MAX_ROWS=100000, DRILL_PAGE=25, SLICER_SEARCH=30, SLICER_MAX=500, BLANK_THRESH=0.95;
 const isMoneyField=f=>/sale|revenue|profit|price|amount|cost|income|spend|budget|fee|net|gross|pay|earn|cash|value|due|paid|deduct|bill/i.test(f);
 
@@ -79,7 +87,7 @@ function fmtNum(n, agg, field, fmtKey, isCurrency) {
     if (Number.isInteger(n)) return n.toLocaleString();
     return parseFloat(n.toFixed(4)).toLocaleString(undefined,{maximumFractionDigits:4});
   }
-  if (agg === "count") return Math.round(n).toLocaleString();
+  if (agg === "count" || agg === "countDistinct") return Math.round(n).toLocaleString();
   const fmt = NUM_FORMATS.find(f => f.key === fmtKey) || NUM_FORMATS[4];
   const pfx = isMoneyField(field) ? "\u20B9" : "";
   if (fmt.key === "units") return pfx + Math.round(n).toLocaleString();
@@ -229,6 +237,7 @@ function doAgg(rows,field,type){
   if (type==="sum") return _.sum(v);
   if (type==="avg") return _.mean(v);
   if (type==="count") return rows.length;
+  if (type==="countDistinct") return new Set(rows.map(r=>String(r[field]??"").trim().toLowerCase()).filter(x=>x!=="")).size;
   if (type==="min") return Math.min(...v);
   if (type==="max") return Math.max(...v);
   return _.sum(v);
@@ -1084,7 +1093,9 @@ function DrillDown({data,target,fields,numFields,onClose,numFmt,savedHiddenCols,
                       overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                       {row[f]===""||row[f]===null||row[f]===undefined
                         ?<span style={{color:T.textMd}}>-</span>
-                        :numFields.has(f)?fmtNum(+row[f],getColFmt(f)==="general"?"general":"sum",f,getColFmt(f)):String(row[f])}
+                        :numFields.has(f)&&Number.isFinite(+row[f])
+                          ?fmtNum(+row[f],getColFmt(f)==="general"?"general":"sum",f,getColFmt(f))
+                          :String(row[f])/* text in a numeric column prints as text, not NaN */}
                     </td>
                   ))}
                 </tr>
@@ -1720,7 +1731,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   // Must run unconditionally — guard internally with safe fallbacks
   const orderedVals=useMemo(()=>{
     if (!vals.length||hasGroups||!colOrder) return vals;
-    const reordered=colOrder.map(n=>vals.find(v=>v.field===n)).filter(Boolean);
+    const reordered=colOrder.map(n=>vals.find(v=>vid(v)===n)).filter(Boolean);
     return reordered.length===vals.length?reordered:vals;
   },[vals,colOrder,hasGroups]);
 
@@ -1763,7 +1774,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   // Apply value-column sort: reorder rows by a metric descending/ascending
   const sortedRowKeys=valSort
     ? (()=>{
-        const vi=vals.findIndex(v=>v.field===valSort.field);
+        const vi=vals.findIndex(v=>vid(v)===valSort.field);
         if (vi===-1) return rowKeys;
         return [...rowKeys].sort((a,b)=>{
           const av=((cells[a.join("\0")]||{})["__total__"]||[])[vi]||0;
@@ -1820,7 +1831,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   })();
   // In no-group mode, orderedVals may differ from vals (user reordered).
   // vi must reference the ORIGINAL vals index (cells are stored in original order).
-  const origIdx=v=>vals.findIndex(ov=>ov.field===v.field);
+  const origIdx=v=>vals.findIndex(ov=>vid(ov)===vid(v));
   const flatCols=splitMode
     ?[...orderedColVals.map(k=>{const sp=specByKey[k];return{key:k,vi:sp?sp.vi:0,isTotal:false,label:sp?sp.val:""};}),
       ...vals.map((v,vi)=>                                 ({key:"__total__",vi,isTotal:true}))]
@@ -1949,36 +1960,36 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
               return(
                 <th key={i}
                   draggable={isDraggable}
-                  onDragStart={e=>{if(isDraggable)e.dataTransfer.setData("pivotCol",v.field);}}
-                  onDragOver={e=>{if(isDraggable){e.preventDefault();setDragOverCol(v.field);}}}
+                  onDragStart={e=>{if(isDraggable)e.dataTransfer.setData("pivotCol",vid(v));}}
+                  onDragOver={e=>{if(isDraggable){e.preventDefault();setDragOverCol(vid(v));}}}
                   onDragLeave={()=>setDragOverCol(null)}
                   onDrop={e=>{
                     if(!isDraggable)return;
                     const from=e.dataTransfer.getData("pivotCol");
                     setDragOverCol(null);
-                    if(from&&from!==v.field)onColReorder(from,v.field);
+                    if(from&&from!==vid(v))onColReorder(from,vid(v));
                   }}
                   style={{...thStyle,textAlign:"right",borderLeft:lBorder(i),
-                    background:col.isTotal&&hasGroups?"#3D1A0E":dragOverCol===v.field?"rgba(200,146,42,0.3)":T.bgHeader,
+                    background:col.isTotal&&hasGroups?"#3D1A0E":dragOverCol===vid(v)?"rgba(200,146,42,0.3)":T.bgHeader,
                     cursor:isDraggable?"grab":"default",
-                    outline:dragOverCol===v.field?"2px dashed "+T.accent:"none",
-                    position:"relative",width:colWidths["val_"+v.field]||undefined,minWidth:70}}>
+                    outline:dragOverCol===vid(v)?"2px dashed "+T.accent:"none",
+                    position:"relative",width:colWidths["val_"+vid(v)]||undefined,minWidth:70}}>
                   <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:4}}>
                     {isDraggable&&<span style={{opacity:0.4,fontSize:9}}>{"⋮"}</span>}
                     <div style={{textAlign:"right"}}>
                       <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
                         {splitMode&&!col.isTotal?(col.label||"(blank)"):v.field}
-                        <button onClick={e=>{e.stopPropagation();setValSort(vs=>vs&&vs.field===v.field?(vs.dir==="asc"?{field:v.field,dir:"desc"}:null):{field:v.field,dir:"desc"});}}
+                        <button onClick={e=>{e.stopPropagation();setValSort(vs=>vs&&vs.field===vid(v)?(vs.dir==="asc"?{field:vid(v),dir:"desc"}:null):{field:vid(v),dir:"desc"});}}
                           title={"Sort by "+v.field}
                           style={{background:"none",border:"none",cursor:"pointer",color:"rgba(245,239,230,0.7)",fontSize:11,padding:"0 2px",lineHeight:1,flexShrink:0}}>
-                          {valSort&&valSort.field===v.field?(valSort.dir==="desc"?"↓":"↑"):"⇅"}
+                          {valSort&&valSort.field===vid(v)?(valSort.dir==="desc"?"↓":"↑"):"⇅"}
                         </button>
                       </div>
                       <div style={{fontSize:10,fontWeight:400,opacity:0.65,marginTop:2}}>{v.agg}</div>
                       {!splitMode&&v.valueFilter&&<div style={{fontSize:9,opacity:0.7,marginTop:1,color:"#f59e0b"}}>⊕ {v.valueFilter.field}{v.valueFilter.val!==undefined?" "+v.valueFilter.op+" "+v.valueFilter.val:""}</div>}
                     </div>
                   </div>
-                  <ResizeHandle onMouseDown={e=>startColResize("val_"+v.field,e)}/>
+                  <ResizeHandle onMouseDown={e=>startColResize("val_"+vid(v),e)}/>
                 </th>
               );
             })}
@@ -2605,13 +2616,13 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
           padding:"8px 12px",background:"rgba(217,119,6,0.06)",border:"1px solid rgba(217,119,6,0.25)",borderRadius:8}}>
           <span style={{fontSize:12,color:"#b45309",fontWeight:700}}>Value conditions:</span>
           {(config.values||[]).filter(v=>v.valueFilter).map(v=>(
-            <div key={v.field} style={{display:"inline-flex",alignItems:"center",gap:5,
+            <div key={vid(v)} style={{display:"inline-flex",alignItems:"center",gap:5,
               background:T.bgCard,border:"1px solid rgba(217,119,6,0.35)",borderRadius:14,padding:"3px 4px 3px 10px",fontSize:11}}>
               <span style={{fontWeight:700,color:T.text}}>{v.agg} of {v.field}</span>
               <span style={{color:T.textMd}}>counts only rows where</span>
               <span style={{fontWeight:700,color:"#b45309"}}>{describeValueFilter(v.valueFilter)}</span>
               {onValueFilterChange&&(
-                <button onClick={()=>setEditingValFilter(p=>p===v.field?null:v.field)}
+                <button onClick={()=>setEditingValFilter(p=>p===vid(v)?null:vid(v))}
                   title="Change this condition"
                   style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:T.primary,padding:"0 4px"}}>
                   ✏
@@ -2639,7 +2650,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
       )}
       {editingValFilter&&onValueFilterChange&&(()=>{
         const isAdd=editingValFilter==="__add__";
-        const target=isAdd?null:(config.values||[]).find(v=>v.field===editingValFilter);
+        const target=isAdd?null:(config.values||[]).find(v=>vid(v)===editingValFilter);
         const choices=isAdd?(config.values||[]).filter(v=>!v.valueFilter):[];
         return(
           <div style={{marginBottom:14,padding:"10px 12px",background:T.bgStat,border:"1px solid "+T.border,borderRadius:8}}>
@@ -2647,7 +2658,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:11}}>
                 <span style={{color:T.textMd}}>Add a condition to which metric?</span>
                 {choices.map(v=>(
-                  <button key={v.field} onClick={()=>setEditingValFilter(v.field)}
+                  <button key={vid(v)} onClick={()=>setEditingValFilter(vid(v))}
                     style={{fontSize:11,padding:"3px 10px",background:T.bgCard,border:"1px solid "+T.border,
                       borderRadius:12,cursor:"pointer",color:T.text,fontWeight:600}}>
                     {v.agg} of {v.field}
@@ -2660,7 +2671,7 @@ function Report({config,data,fields,numFields,showExport,cardFields,onDrillHidde
               <>
                 <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:5}}>Condition for {target.agg} of {target.field}</div>
                 <ValueFilterRow field={target.field} vf={target.valueFilter} allFields={fields}
-                  onSave={vf=>{onValueFilterChange(target.field,vf);setEditingValFilter(null);}}
+                  onSave={vf=>{onValueFilterChange(vid(target),vf);setEditingValFilter(null);}}
                   onClose={()=>setEditingValFilter(null)}/>
               </>
             ):null}
@@ -2770,7 +2781,7 @@ function ValueFilterRow({field, vf, allFields, onSave, onClose}) {
 }
 
 // ── Zone box with drag-and-drop reorder ────────────────────────────────────────
-function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValueFilterChange, onValueSplitChange, splitFields, onReorder, zone, emptyMsg, allFields}) {
+function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValueFilterChange, onValueSplitChange, onDuplicate, splitFields, onReorder, zone, emptyMsg, allFields, numFields}) {
   const [openFilterFor, setOpenFilterFor]=useState(null);
   return(
     <div style={{background:T.bgCard,border:"1px solid "+color+"50",borderRadius:10,padding:12}}>
@@ -2782,26 +2793,27 @@ function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValue
           without them overlapping. Plain dimensions stay as compact pills. */}
       <div style={{display:"flex",flexDirection:isValues?"column":"row",flexWrap:isValues?"nowrap":"wrap",gap:6,minHeight:30}}>
         {isValues ? fields.map(v=>(
-          <div key={v.field}>
+          <div key={vid(v)}>
             <div draggable
-              onDragStart={e=>{e.dataTransfer.setData("text/plain",zone+":"+v.field);e.dataTransfer.effectAllowed="move";}}
+              onDragStart={e=>{e.dataTransfer.setData("text/plain",zone+":"+vid(v));e.dataTransfer.effectAllowed="move";}}
               onDragOver={e=>e.preventDefault()}
-              onDrop={e=>{e.preventDefault();const p=e.dataTransfer.getData("text/plain").split(":");
-                if(p[0]===zone&&p[1]!==v.field)onReorder&&onReorder(p[1],v.field);}}
+              onDrop={e=>{e.preventDefault();const raw=e.dataTransfer.getData("text/plain");const i=raw.indexOf(":");
+                const z=raw.slice(0,i),id=raw.slice(i+1);
+                if(z===zone&&id!==vid(v))onReorder&&onReorder(id,vid(v));}}
               style={{display:"flex",alignItems:"center",gap:6,cursor:"grab",
                 background:"rgba(0,0,0,0.05)",borderRadius:8,padding:"5px 7px"}}>
               <span style={{opacity:0.45,fontSize:10,flexShrink:0}}>⠿</span>
               <span title={v.field}
                 style={{flex:"1 1 auto",minWidth:40,fontSize:12,fontWeight:600,color,
                   overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.field}</span>
-              <select value={v.agg} onChange={e=>onAggChange&&onAggChange(v.field,e.target.value)}
-                title="Aggregation"
+              <select value={v.agg} onChange={e=>onAggChange&&onAggChange(vid(v),e.target.value)}
+                title={(numFields&&!numFields.has(v.field))?"Text column — can only be counted":"Aggregation"}
                 style={{fontSize:10,border:"1px solid "+color+"50",borderRadius:4,background:T.bgCard,
                   color,cursor:"pointer",padding:"1px 2px",flexShrink:0}}>
-                {AGGS.map(a=><option key={a} value={a}>{a}</option>)}
+                {aggsFor(!numFields||numFields.has(v.field)).map(a=><option key={a} value={a}>{a}</option>)}
               </select>
               {onValueSplitChange&&!!(splitFields||[]).length&&(
-                <select value={v.splitBy||""} onChange={e=>onValueSplitChange(v.field,e.target.value)}
+                <select value={v.splitBy||""} onChange={e=>onValueSplitChange(vid(v),e.target.value)}
                   title="Give this metric its own columns — e.g. its own bucket ranges"
                   style={{fontSize:10,border:"1px solid "+(v.splitBy?color:color+"50"),borderRadius:4,
                     background:v.splitBy?color:T.bgCard,color:v.splitBy?"#fff":T.textMd,
@@ -2811,20 +2823,24 @@ function ZoneBox({label, color, fields, onRemove, isValues, onAggChange, onValue
                 </select>
               )}
               {onValueFilterChange&&<button
-                onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===v.field?null:v.field);}}
+                onClick={e=>{e.stopPropagation();setOpenFilterFor(p=>p===vid(v)?null:vid(v));}}
                 title={v.valueFilter?"Edit row condition":"Add row condition (aggregate only matching rows)"}
                 style={{background:v.valueFilter?"#d97706":T.bgCard,border:"1px solid "+(v.valueFilter?"#d97706":color+"50"),
                   borderRadius:4,cursor:"pointer",fontSize:10,padding:"1px 6px",
                   color:v.valueFilter?"#fff":color,flexShrink:0}}>
                 ⊕
               </button>}
-              <button onClick={e=>{e.stopPropagation();onRemove(v.field);}} title="Remove"
+              {onDuplicate&&<button onClick={e=>{e.stopPropagation();onDuplicate(vid(v));}}
+                title="Add another aggregation of this column (e.g. count beside sum)"
+                style={{background:T.bgCard,border:"1px solid "+color+"50",borderRadius:4,cursor:"pointer",
+                  fontSize:10,padding:"1px 6px",color,flexShrink:0}}>⧉</button>}
+              <button onClick={e=>{e.stopPropagation();onRemove(vid(v));}} title="Remove"
                 style={{background:"none",border:"none",cursor:"pointer",color:T.textMd,fontSize:14,
                   lineHeight:1,padding:"0 2px",flexShrink:0}}>×</button>
             </div>
-            {openFilterFor===v.field&&onValueFilterChange&&(
+            {openFilterFor===vid(v)&&onValueFilterChange&&(
               <ValueFilterRow field={v.field} vf={v.valueFilter} allFields={allFields||[]}
-                onSave={vf=>{onValueFilterChange(v.field,vf);setOpenFilterFor(null);}}
+                onSave={vf=>{onValueFilterChange(vid(v),vf);setOpenFilterFor(null);}}
                 onClose={()=>setOpenFilterFor(null)}/>
             )}
           </div>
@@ -2843,7 +2859,7 @@ function FieldRow({field, isNum, status, onToggle, onToggleType, onToggleCard}) 
   const btns=[
     {zone:"rows",   L:"R", color:T.tagR, on:status.rows},
     {zone:"columns",L:"C", color:T.tagC, on:status.cols},
-    ...(isNum?[{zone:"values",L:"V",color:T.tagV,on:status.vals}]:[]),
+    {zone:"values",L:"V",color:T.tagV,on:status.vals}, // text fields can be counted
     {zone:"filters",L:"F", color:T.tagF, on:status.filters},
     {zone:"cards",  L:"K", color:T.tagK, on:status.card},
   ];
@@ -4278,25 +4294,34 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
       // Columns is a single slot: a second field used to produce a cartesian
       // product of the two dimensions, which is unreadable. Adding replaces.
       else if(zone==="columns"){if(cols.includes(field))cols=[];else{rows=rows.filter(f=>f!==field);cols=[field];}}
-      else if(zone==="values"){if(vals.some(v=>v.field===field))vals=vals.filter(v=>v.field!==field);else vals=[...vals,{field,agg:"sum"}];}
+      else if(zone==="values"){if(vals.some(v=>v.field===field))vals=vals.filter(v=>v.field!==field);
+        else vals=[...vals,{id:newVid(field),field,agg:effectiveNumFields.has(field)?"sum":"count"}];}
       else if(zone==="filters"){if(filters.includes(field))filters=filters.filter(f=>f!==field);else filters=[...filters,field];}
       return{...c,rows,columns:cols,values:vals,filters};
     });
   }
 
   function removeFrom(zone,field){
-    setConfig(c=>({...c,[zone]:zone==="values"?c.values.filter(v=>v.field!==field):c[zone].filter(f=>f!==field)}));
+    setConfig(c=>({...c,[zone]:zone==="values"?c.values.filter(v=>vid(v)!==field):c[zone].filter(f=>f!==field)}));
   }
 
-  function setAgg(field,agg,isCurrency){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,agg,...(isCurrency!==undefined?{isCurrency}:{})}:v)}));}
-  function setValueFilter(field,vf){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,valueFilter:vf||undefined}:v)}));}
-  function setValueSplit(field,sb){setConfig(c=>({...c,values:c.values.map(v=>v.field===field?{...v,splitBy:sb||undefined}:v)}));}
+  function setAgg(id,agg,isCurrency){setConfig(c=>({...c,values:c.values.map(v=>vid(v)===id?{...v,agg,...(isCurrency!==undefined?{isCurrency}:{})}:v)}));}
+  function setValueFilter(id,vf){setConfig(c=>({...c,values:c.values.map(v=>vid(v)===id?{...v,valueFilter:vf||undefined}:v)}));}
+  function setValueSplit(id,sb){setConfig(c=>({...c,values:c.values.map(v=>vid(v)===id?{...v,splitBy:sb||undefined}:v)}));}
+  // Adds a second aggregation of the same column, e.g. sum next to count.
+  function duplicateValue(id){setConfig(c=>{
+    const i=c.values.findIndex(v=>vid(v)===id); if(i===-1) return c;
+    const src=c.values[i];
+    const copy={...src,id:newVid(src.field),agg:src.agg==="sum"?"count":"sum"};
+    const values=[...c.values]; values.splice(i+1,0,copy);
+    return{...c,values};
+  });}
 
   function reorderInZone(zone,fromField,toField) {
     setConfig(c=>{
       if (zone==="values"){
         const arr=[...c.values];
-        const fi=arr.findIndex(v=>v.field===fromField), ti=arr.findIndex(v=>v.field===toField);
+        const fi=arr.findIndex(v=>vid(v)===fromField), ti=arr.findIndex(v=>vid(v)===toField);
         if (fi===-1||ti===-1) return c;
         const [mv]=arr.splice(fi,1); arr.splice(ti,0,mv);
         return{...c,values:arr};
@@ -4534,7 +4559,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
             </div>
             <ZoneBox label="Values (V)" color={T.tagV} zone="values"
               fields={config.values} isValues onAggChange={setAgg} onValueFilterChange={setValueFilter}
-              onValueSplitChange={setValueSplit} splitFields={builderFields.filter(f=>!effectiveNumFields.has(f))}
+              onValueSplitChange={setValueSplit} onDuplicate={duplicateValue} numFields={effectiveNumFields}
+              splitFields={builderFields.filter(f=>!effectiveNumFields.has(f))}
               allFields={builderFields}
               onRemove={f=>removeFrom("values",f)} onReorder={(a,b)=>reorderInZone("values",a,b)}
               emptyMsg="Press V on a numeric field"/>
