@@ -1415,7 +1415,10 @@ function useColResize(defaultWidth=120) {
     e.preventDefault();
     e.stopPropagation();
     const startX=e.clientX;
-    const startW=widths[key]||defaultWidth;
+    // Fall back to the cell's rendered width, not a fixed default — otherwise the
+    // first drag snaps the column to 120px before it starts tracking the mouse.
+    const th=e.currentTarget&&e.currentTarget.closest&&e.currentTarget.closest("th,td");
+    const startW=widths[key]||(th&&th.offsetWidth)||defaultWidth;
     const onMove=me=>{
       const newW=Math.max(50,startW+(me.clientX-startX));
       setWidths(w=>({...w,[key]:newW}));
@@ -1433,6 +1436,12 @@ function useColResize(defaultWidth=120) {
   },[widths]);
   return [widths,startResize];
 }
+
+// Column widths are applied through <colgroup> + table-layout:fixed, which is the
+// only combination browsers honour: CSS 2.1 leaves min/max-width on table cells
+// undefined, and under auto layout a nowrap column can never shrink below its text.
+const DEF_ROW_W=190, DEF_VAL_W=112;
+const cellClip={overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"};
 
 // Resize handle element — attach onMouseDown={e=>startResize(key,e)}
 const ResizeHandle=({onMouseDown})=>(
@@ -1863,6 +1872,10 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   const lBorder=i=>i===0||grpOf(flatCols[i-1])!==grpOf(flatCols[i])?"1px solid "+T.borderDk:"none";
   const thStyle={padding:"10px 14px",fontWeight:700,fontSize:12,color:T.textLt,whiteSpace:"nowrap",background:T.bgHeader,borderBottom:"1px solid "+T.borderHd};
   // Column group drag handlers (only active when onColReorder is provided)
+  // Resolved column widths, and the definite table width they add up to.
+  const rowColW=i=>colWidths["row_"+i]||DEF_ROW_W;
+  const valColW=c=>colWidths["val_"+vid(effectiveVals[c.vi]||{})]||DEF_VAL_W;
+  const tableW=rFs.reduce((a,_,i)=>a+rowColW(i),0)+flatCols.reduce((a,c)=>a+valColW(c),0);
   const colDragStart=(e,cv)=>{if(onColReorder)e.dataTransfer.setData("pivotCol",cv);};
   const colDragOver=(e,cv)=>{if(onColReorder){e.preventDefault();setDragOverCol(cv);}};
   const colDrop=(e,cv)=>{
@@ -1879,7 +1892,14 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
           ? "Each measure split by its own "+[...new Set(vals.filter(v=>v.splitBy).map(v=>v.splitBy))].join(", ")
           : cFs.length?"Columns: "+cFs.join("  →  "):""}
       </div>
-      <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
+      {/* table-layout:fixed only engages when the table width is DEFINITE — with
+          width:auto the spec falls back to auto layout and every <col> width is
+          ignored, which is why the drag handles appeared to do nothing. */}
+      <table style={{borderCollapse:"collapse",tableLayout:"fixed",width:tableW,minWidth:"100%"}}>
+        <colgroup>
+          {rFs.map((_,i)=><col key={"r"+i} style={{width:rowColW(i)+"px"}}/>)}
+          {flatCols.map((c,i)=><col key={"c"+i} style={{width:valColW(c)+"px"}}/>)}
+        </colgroup>
         <thead style={{position:"sticky",top:0,zIndex:5}}>
           {hasGroups&&colLevels.map((lvl,L)=>(
             <tr key={"lvl"+L}>
@@ -1889,7 +1909,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                   position:"relative",verticalAlign:"bottom",
                   background:(pivotSort&&pivotSort.fieldIdx===ri)||((pivotFilters&&pivotFilters[ri]||[]).length>0)?"rgba(200,146,42,0.2)":T.bgHeader}}>
                   <div style={{display:"flex",alignItems:"center",gap:4}}>
-                    <span>{rf}</span>
+                    <span style={{...cellClip}}>{rf}</span>
                     {onPivotFilter&&<DrillColFilter
                       field={rf}
                       data={result.rowKeys.map(rk=>({[rf]:rk[ri]}))}
@@ -1905,7 +1925,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
               {lvl.map((g,i)=>{
                 // Drag-to-reorder only makes sense with a single level — moving an
                 // inner group across its parent would break the nesting.
-                const canDrag=!!onColReorder&&nLevels===1;
+                const canDrag=!!onColReorder&&nLevels===1&&!splitMode;
                 return(
                   <th key={i} colSpan={g.span*spanMult}
                     draggable={canDrag}
@@ -1919,10 +1939,10 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                       cursor:canDrag?"grab":"default",
                       outline:dragOverCol===g.key?"2px dashed "+T.accent:"none",
                       transition:"background 0.1s",fontSize:L===0?12:11,opacity:L===0?1:0.92,
-                      position:"relative",width:colWidths["grp_"+g.key]||undefined,minWidth:60}}>
+                      position:"relative"}}>
                     {canDrag&&<span style={{opacity:0.4,fontSize:9,marginRight:4}}>⋮</span>}
                     {g.label||"(blank)"}
-                    {canDrag&&<ResizeHandle onMouseDown={e=>startColResize("grp_"+g.key,e)}/>}
+
                   </th>
                 );
               })}
@@ -1973,7 +1993,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
                     background:col.isTotal&&hasGroups?"#3D1A0E":dragOverCol===vid(v)?"rgba(200,146,42,0.3)":T.bgHeader,
                     cursor:isDraggable?"grab":"default",
                     outline:dragOverCol===vid(v)?"2px dashed "+T.accent:"none",
-                    position:"relative",width:colWidths["val_"+vid(v)]||undefined,minWidth:70}}>
+                    position:"relative"}}>
                   <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:4}}>
                     {isDraggable&&<span style={{opacity:0.4,fontSize:9}}>{"⋮"}</span>}
                     <div style={{textAlign:"right"}}>
@@ -2002,7 +2022,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
               <tr key={rkStr} style={{background:ri%2===0?T.bgCard:T.bgAlt}}>
                 {rk.map((v,i)=>(
                   <td key={i} style={{padding:"9px 14px",fontSize:13,fontWeight:600,borderBottom:"0.5px solid "+T.border,paddingLeft:i>0?28:14,color:T.text,
-                    width:colWidths["row_"+i]||undefined,minWidth:80}}>
+                    ...cellClip}}>
                     {i>0&&<span style={{opacity:0.3,marginRight:6,fontWeight:400}}>L</span>}
                     {v||<span style={{color:T.textMd}}>(blank)</span>}
                   </td>
