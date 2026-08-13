@@ -507,6 +507,10 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
     // overflow:hidden is left alone — that is deliberate text truncation.
     ["overflow","overflowX","overflowY"].forEach(k=>{if(/auto|scroll/.test(s[k]||""))s[k]="visible";});
     if(s.maxHeight)s.maxHeight="none";
+    // Viewport units mean nothing on paper — a 100vh box would reserve a screenful
+    // of blank height per page and pad the run out with empty sheets.
+    if(/vh|vw/.test(s.height||""))s.height="auto";
+    if(/vh|vw/.test(s.minHeight||""))s.minHeight="0";
     if(s.position==="sticky"||s.position==="fixed")s.position="static";
     if(s.boxShadow)s.boxShadow="none";
   });
@@ -529,7 +533,7 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
   wrap.style.cssText="display:block;transform-origin:top left;background:#fff";
   if(title||subtitle){
     const h=d.createElement("div");
-    h.style.cssText="margin:0 0 10px;padding-bottom:6px;border-bottom:2px solid #5C2D1A;font-family:system-ui,sans-serif";
+    h.style.cssText="margin:0 0 7px;padding-bottom:4px;border-bottom:1.5px solid #5C2D1A;font-family:system-ui,sans-serif";
     h.innerHTML="<div style='font-size:17px;font-weight:700;color:#5C2D1A'></div>"+
                 "<div style='font-size:11px;color:#7a6a5f;margin-top:3px'></div>";
     h.children[0].textContent=title;
@@ -540,10 +544,22 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
   d.body.appendChild(wrap);
 
   setTimeout(()=>{
+    // scrollWidth is unreliable once the scroll boxes have been opened to
+    // overflow:visible — it reports the padding box, not the overflowing table.
+    // Measure the real extent of every descendant instead.
+    const extent=()=>{
+      const base=wrap.getBoundingClientRect();
+      let right=base.right, bottom=base.bottom;
+      wrap.querySelectorAll("*").forEach(el=>{
+        const r=el.getBoundingClientRect();
+        if(r.width||r.height){ if(r.right>right)right=r.right; if(r.bottom>bottom)bottom=r.bottom; }
+      });
+      return {w:Math.ceil(right-base.left), h:Math.ceil(bottom-base.top)};
+    };
     // Lay the content out at the page width and see whether it still overflows.
     // Only then is the paper turned, and only then is anything shrunk — so the
     // common case prints at natural type size, edge to edge.
-    const layoutAt=w=>{wrap.style.width=w+"px";return Math.max(wrap.scrollWidth,w);};
+    const layoutAt=w=>{wrap.style.width=w+"px";return Math.max(extent().w,w);};
     let landscape=false, avail=A4_PORTRAIT_PX;
     let cw=layoutAt(avail);
     if(cw>avail+1){                                      // too wide — turn the paper first
@@ -554,9 +570,12 @@ function printSection(node,{title="ReportHub",subtitle=""}={}) {
       wrap.style.width=cw+"px";                          // let it be its true width, then shrink
       wrap.style.transform="scale("+scale+")";
     } else wrap.style.transform="none";
-    // A transformed box keeps its unscaled layout height — pin the real height so
-    // the print run does not tack on blank trailing pages.
-    d.body.style.height=Math.ceil(wrap.scrollHeight*scale)+"px";
+    // transform:scale shrinks paint, not layout — the box still occupies its full
+    // unscaled height, and the print run paginates over that, emitting blank
+    // sheets. Pull the surplus back with a negative margin so the document is
+    // exactly as tall as the scaled content, without clipping page breaks.
+    const ch=extent().h;
+    wrap.style.marginBottom=scale<1?(-Math.ceil(ch*(1-scale))+"px"):"0";
     const st=d.createElement("style");
     st.textContent="@page{size:A4 "+(landscape?"landscape":"portrait")+";margin:"+PRINT_MARGIN_MM+"mm}"+
       "*{-webkit-print-color-adjust:exact;print-color-adjust:exact}"+
@@ -1886,7 +1905,7 @@ function PivotTable({result,onDrillDown,numFmt,colOrder,onColReorder,colFilter,c
   };
   return(
     <div style={{overflowX:"auto",overflowY:"auto",maxHeight:"70vh",borderRadius:10,border:"1px solid "+T.border,boxShadow:"0 2px 8px rgba(92,45,26,0.08)"}}>
-      <div style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border}}>
+      <div data-noprint style={{fontSize:11,color:T.textMd,padding:"5px 14px",background:T.bgStat,borderBottom:"0.5px solid "+T.border}}>
         {onDrillDown?"Click any cell to drill down  ·  ":""}{onColReorder&&!splitMode&&nLevels<=1?"Drag column headers to reorder  ·  ":""}
         {splitMode
           ? "Each measure split by its own "+[...new Set(vals.filter(v=>v.splitBy).map(v=>v.splitBy))].join(", ")
@@ -4612,8 +4631,8 @@ function AdminView({onLogout,savedReports,publishedId,onSaveReport,onPublishRepo
 
       {tab==="preview"&&dataset&&config&&(
         <div style={{padding:20}}>
-          <div style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
-          <div style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
+          <div data-noprint style={{fontWeight:700,fontSize:18,color:T.primary,marginBottom:3}}>{config.name}</div>
+          <div data-noprint style={{fontSize:12,color:T.textMd,marginBottom:18}}>Preview — what users see · click cells to drill down</div>
           <Report key={"preview_"+(activeReportId||"new")} config={config} data={dataset.rows} fields={dataset.fields} numFields={effectiveNumFields} showExport cardFields={cardFields}
             onValueFilterChange={setValueFilter}
             externalFilters={adminGlobalFilters[adminFilterKey(activeTabIdx)]}
