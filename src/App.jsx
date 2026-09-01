@@ -7515,7 +7515,7 @@ function ReportAccessPanel({reportId, reportName, onClose}) {
         </div>
         <div style={{overflowY:"auto",padding:"10px 14px",flex:1}}>
           {loading && <div style={{textAlign:"center",padding:20,color:T.textMd}}>Loading users…</div>}
-          {!loading && users.length===0 && <div style={{textAlign:"center",padding:20,color:T.textMd}}>No regular users yet. Create users in Settings first.</div>}
+          {!loading && users.length===0 && <div style={{textAlign:"center",padding:20,color:T.textMd}}>No report-viewing users yet. Create a User or Admin+User in Settings first.</div>}
           {!loading && users.length>0 && (
             <>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
@@ -7534,7 +7534,12 @@ function ReportAccessPanel({reportId, reportName, onClose}) {
                     cursor:"pointer",background:selected.has(u.id)?"rgba(92,45,26,0.05)":"none"}}>
                     <input type="checkbox" checked={selected.has(u.id)} onChange={()=>toggle(u.id)}
                       style={{width:15,height:15,accentColor:T.primary,cursor:"pointer"}}/>
-                    <span style={{fontWeight:600,fontSize:13,color:T.text,flex:1}}>{u.username}</span>
+                    <span style={{fontWeight:600,fontSize:13,color:T.text}}>{u.username}</span>
+                    <span style={{fontSize:10,color:T.textMd,background:T.bgStat,border:"1px solid "+T.border,
+                      borderRadius:4,padding:"1px 6px",flexShrink:0}}>
+                      {u.role==="subadmin_user"?"Admin+User":"User"}
+                    </span>
+                    <span style={{flex:1}}/>
                     {selected.has(u.id)
                       ? <span style={{fontSize:10,color:T.success,fontWeight:600}}>✓ Has access</span>
                       : <span style={{fontSize:10,color:T.textMd}}>No access</span>}
